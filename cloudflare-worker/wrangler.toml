@@ -1,6 +1,6 @@
 name = "scs-task-attachments"
 main = "src/index.js"
-compatibility_date = "2026-08-01"
+compatibility_date = "2026-08-22"
 
 [[r2_buckets]]
 binding = "ATTACHMENTS"
