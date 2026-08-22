@@ -96,6 +96,17 @@ create table if not exists public.tm_order_messages (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.tm_attachments (
+  id uuid primary key default gen_random_uuid(),
+  order_id text not null references public.tm_orders(id) on delete cascade,
+  uploader_id uuid not null references public.tm_profiles(id),
+  file_name text not null check (char_length(file_name) between 1 and 255),
+  object_key text not null unique,
+  mime_type text not null,
+  size_bytes bigint not null check (size_bytes > 0 and size_bytes <= 26214400),
+  created_at timestamptz not null default now()
+);
+
 create table if not exists public.tm_order_events (
   id uuid primary key default gen_random_uuid(),
   order_id text not null references public.tm_orders(id) on delete cascade,
@@ -111,6 +122,7 @@ create index if not exists tm_tasks_team_stage_idx on public.tm_tasks(team,stage
 create index if not exists tm_tasks_due_idx on public.tm_tasks(due_date) where due_date is not null;
 create index if not exists tm_assignees_user_idx on public.tm_task_assignees(user_id);
 create index if not exists tm_messages_order_created_idx on public.tm_order_messages(order_id,created_at);
+create index if not exists tm_attachments_order_created_idx on public.tm_attachments(order_id,created_at desc);
 create index if not exists tm_events_order_created_idx on public.tm_order_events(order_id,created_at desc);
 create index if not exists tm_products_order_idx on public.tm_order_products(order_id);
 
@@ -131,7 +143,7 @@ drop trigger if exists tm_create_pending_profile on auth.users;
 create trigger tm_create_pending_profile after insert on auth.users for each row execute function private.tm_handle_new_auth_user();
 
 create or replace function private.tm_current_role()
-returns text language sql stable security definer set search_path = public,pg_temp
+returns text language sql stable security definer set search_path = ''
 as $$ select role from public.tm_profiles where id = (select auth.uid()) and is_active limit 1 $$;
 
 create or replace function private.tm_is_active_member()
@@ -216,6 +228,22 @@ as $$ begin insert into public.tm_order_events(order_id,actor_id,event_type,desc
 drop trigger if exists tm_message_event on public.tm_order_messages;
 create trigger tm_message_event after insert on public.tm_order_messages for each row execute function private.tm_log_message_event();
 
+create or replace function private.tm_log_attachment_event()
+returns trigger language plpgsql security definer set search_path = public,pg_temp
+as $$
+begin
+  if tg_op='INSERT' then
+    insert into public.tm_order_events(order_id,actor_id,event_type,description,metadata)
+    values(new.order_id,new.uploader_id,'attachment_uploaded',coalesce((select full_name from public.tm_profiles where id=new.uploader_id),'Team member')||' uploaded “'||new.file_name||'”',jsonb_build_object('attachment_id',new.id,'size_bytes',new.size_bytes));
+    return new;
+  end if;
+  insert into public.tm_order_events(order_id,actor_id,event_type,description,metadata)
+  values(old.order_id,(select auth.uid()),'attachment_deleted','Attachment “'||old.file_name||'” was deleted',jsonb_build_object('attachment_id',old.id));
+  return old;
+end $$;
+drop trigger if exists tm_attachment_event on public.tm_attachments;
+create trigger tm_attachment_event after insert or delete on public.tm_attachments for each row execute function private.tm_log_attachment_event();
+
 alter table public.tm_profiles enable row level security;
 alter table public.tm_board_stages enable row level security;
 alter table public.tm_orders enable row level security;
@@ -223,6 +251,7 @@ alter table public.tm_order_products enable row level security;
 alter table public.tm_tasks enable row level security;
 alter table public.tm_task_assignees enable row level security;
 alter table public.tm_order_messages enable row level security;
+alter table public.tm_attachments enable row level security;
 alter table public.tm_order_events enable row level security;
 
 drop policy if exists tm_profiles_read on public.tm_profiles;
@@ -238,7 +267,7 @@ create policy tm_stages_admin_all on public.tm_board_stages for all to authentic
 drop policy if exists tm_orders_read on public.tm_orders;
 create policy tm_orders_read on public.tm_orders for select to authenticated using (private.tm_can_access_order(id));
 drop policy if exists tm_orders_insert on public.tm_orders;
-create policy tm_orders_insert on public.tm_orders for insert to authenticated with check (private.tm_current_role() in ('admin','sourcing') and created_by=(select auth.uid()) and updated_by=(select auth.uid()));
+create policy tm_orders_insert on public.tm_orders for insert to authenticated with check ((select auth.uid()) is not null and (select private.tm_current_role()) in ('admin','sourcing') and created_by=(select auth.uid()) and updated_by=(select auth.uid()));
 drop policy if exists tm_orders_update on public.tm_orders;
 create policy tm_orders_update on public.tm_orders for update to authenticated using (private.tm_current_role() in ('admin','sourcing')) with check (private.tm_current_role() in ('admin','sourcing') and updated_by=(select auth.uid()));
 drop policy if exists tm_orders_delete on public.tm_orders;
@@ -272,11 +301,19 @@ create policy tm_messages_insert on public.tm_order_messages for insert to authe
 drop policy if exists tm_messages_delete on public.tm_order_messages;
 create policy tm_messages_delete on public.tm_order_messages for delete to authenticated using (author_id=(select auth.uid()) or private.tm_current_role()='admin');
 
+drop policy if exists tm_attachments_read on public.tm_attachments;
+create policy tm_attachments_read on public.tm_attachments for select to authenticated using (private.tm_can_access_order(order_id));
+drop policy if exists tm_attachments_insert on public.tm_attachments;
+create policy tm_attachments_insert on public.tm_attachments for insert to authenticated with check (uploader_id=(select auth.uid()) and private.tm_can_access_order(order_id));
+drop policy if exists tm_attachments_delete on public.tm_attachments;
+create policy tm_attachments_delete on public.tm_attachments for delete to authenticated using (uploader_id=(select auth.uid()) or private.tm_current_role()='admin');
+
 drop policy if exists tm_events_read on public.tm_order_events;
 create policy tm_events_read on public.tm_order_events for select to authenticated using (private.tm_can_access_order(order_id));
 
-revoke all on public.tm_profiles,public.tm_board_stages,public.tm_orders,public.tm_order_products,public.tm_tasks,public.tm_task_assignees,public.tm_order_messages,public.tm_order_events from anon;
+revoke all on public.tm_profiles,public.tm_board_stages,public.tm_orders,public.tm_order_products,public.tm_tasks,public.tm_task_assignees,public.tm_order_messages,public.tm_attachments,public.tm_order_events from anon;
 grant select,insert,update,delete on public.tm_profiles,public.tm_board_stages,public.tm_orders,public.tm_order_products,public.tm_tasks,public.tm_task_assignees,public.tm_order_messages to authenticated;
+grant select,insert,delete on public.tm_attachments to authenticated;
 grant select on public.tm_order_events to authenticated;
 revoke all on function private.tm_current_role(),private.tm_is_active_member(),private.tm_next_order_id(),private.tm_can_access_task(uuid),private.tm_can_access_order(text) from public,anon;
 grant usage on schema private to authenticated;
@@ -310,6 +347,9 @@ do $$ begin
 exception when duplicate_object then null; end $$;
 do $$ begin
   alter publication supabase_realtime add table public.tm_profiles;
+exception when duplicate_object then null; end $$;
+do $$ begin
+  alter publication supabase_realtime add table public.tm_attachments;
 exception when duplicate_object then null; end $$;
 
 commit;

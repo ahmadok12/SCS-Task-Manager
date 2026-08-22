@@ -1,0 +1,13 @@
+name = "scs-task-attachments"
+main = "src/index.js"
+compatibility_date = "2026-08-01"
+
+[[r2_buckets]]
+binding = "ATTACHMENTS"
+bucket_name = "scs-task-attachments"
+
+[vars]
+SUPABASE_URL = "https://nmhicufwamcrgbilmday.supabase.co"
+SUPABASE_PUBLISHABLE_KEY = "sb_publishable_fPCJf1ElcUQ7QjhIsSYQ5w_HJWi0YT-"
+ALLOWED_ORIGINS = "https://ahmadok12.github.io"
+MAX_FILE_SIZE = "26214400"

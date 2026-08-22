@@ -11,6 +11,7 @@ Separate, mobile-first operations portal for Shaikh China Sourcing. It uses the 
 - Team self-sign-up with administrator approval
 - Sourcing, social-media and logistics permissions
 - Order-specific group chat
+- Private Cloudflare R2 order attachments
 - Automatic permanent timeline entries
 - Realtime task, chat and timeline updates
 - Private product-image storage bucket for the next upload module
@@ -48,6 +49,10 @@ After GitHub provides the final URL:
 3. Add the same URL under **Redirect URLs**. Also add the version ending in `/**`.
 
 Keep **Confirm email** enabled under **Authentication → Providers → Email** so a team member must verify ownership of the email address before approval.
+
+## Part 4 — Cloudflare attachments
+
+Follow `CLOUDFLARE_ATTACHMENT_SETUP.md` to create the private R2 bucket, deploy the secure Worker and add its address to `config.js`.
 
 ## Safe test-data cleanup
 
