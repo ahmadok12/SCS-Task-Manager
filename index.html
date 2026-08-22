@@ -165,7 +165,7 @@ function renderNav(){const items=visibleNav(),make=(rows,mobile=false)=>rows.map
 function allowedTask(t){return db.role==='admin'||t.team===db.role}
 function allowedOrder(o){return db.role==='admin'||db.role==='sourcing'||db.tasks.some(t=>t.order===o.id&&allowedTask(t))}
 function teamChip(t){return `<span class="chip ${esc(t)}">${t==='social'?'Social media':t[0].toUpperCase()+t.slice(1)}</span>`}
-function render(){renderNav();$('#role-select').value=db.role;$('#role-label').textContent=actualRole==='admin'&&db.role!=='admin'?`Administrator · previewing ${db.role}`:db.role==='admin'?'Administrator':db.role==='social'?'Social media team':db.role[0].toUpperCase()+db.role.slice(1)+' team';$('.commercial-only').forEach(x=>x.classList.toggle('hidden',!commercial()));renderDashboard();renderOrders();fillFilters();renderBoard();renderCustomers();renderVendors();renderTeam()}
+function render(){renderNav();$('#role-select').value=db.role;$('#role-label').textContent=actualRole==='admin'&&db.role!=='admin'?`Administrator · previewing ${db.role}`:db.role==='admin'?'Administrator':db.role==='social'?'Social media team':db.role[0].toUpperCase()+db.role.slice(1)+' team';$$('.commercial-only').forEach(x=>x.classList.toggle('hidden',!commercial()));renderDashboard();renderOrders();fillFilters();renderBoard();renderCustomers();renderVendors();renderTeam()}
 function renderDashboard(){
   const visible=db.tasks.filter(allowedTask),done=visible.filter(t=>t.stage==='done').length,overdue=visible.filter(t=>t.due&&new Date(t.due)<todayEnd()&&t.stage!=='done').length;
   const waiting=visible.filter(t=>t.waitingOn&&t.stage!=='done');
@@ -295,5 +295,4 @@ $('#today').textContent=new Intl.DateTimeFormat('en',{weekday:'long',day:'numeri
 </script>
 </body>
 </html>
-
 
