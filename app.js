@@ -9,7 +9,8 @@
   const state = {
     user: null, profile: null, profiles: [], inquiries: [], notifications: [],
     activeInquiry: null, authMode: 'signin', deferredInstall: null,
-    realtimeChannel: null, fieldEdit: null, productEdit: null
+    realtimeChannel: null, fieldEdit: null, productEdit: null,
+    attachmentPreviewUrls: new Map(), attachmentPreviewRequest: 0, openPreviewFileId: null
   };
 
   const $ = (s, root = document) => root.querySelector(s);
@@ -60,6 +61,8 @@
     el('markAllReadBtn').addEventListener('click', markAllRead);
     el('enableAlertsBtn').addEventListener('click', enableBrowserAlerts);
     el('installBtn').addEventListener('click', installPwa);
+    el('inquiryDetailDialog').addEventListener('close', revokeAttachmentPreviews);
+    el('attachmentPreviewDialog').addEventListener('close', closeAttachmentPreview);
     window.addEventListener('online', () => toast('Back online'));
     window.addEventListener('offline', () => toast('You are offline. Saved pages remain available.', 'error'));
   }
@@ -212,6 +215,7 @@
 
   function renderInquiryDetail(activeTab = 'overview') {
     const i = state.activeInquiry; if (!i) return;
+    revokeAttachmentPreviews();
     const assigned = state.profiles.find(p => p.id === i.assigned_to);
     el('inquiryDetailContent').innerHTML = `<div class="detail-wrap">
       <div class="detail-hero"><div class="detail-hero-top"><span class="card-number">${formatInquiryNo(i.inquiry_no)} · Added ${formatDate(i.created_at)}</span><button class="icon-btn" data-dialog-close="inquiryDetailDialog" aria-label="Close"><i data-lucide="x"></i></button></div><div class="detail-title-row"><div><h2>${escapeHtml(i.person_name)}</h2><p>${escapeHtml(i.company_name || 'Individual customer')}</p></div><div class="tag-row"><span class="status-pill status-${i.status}">${statusLabels[i.status]}</span><span class="priority-pill priority-${i.priority}">${escapeHtml(i.priority)}</span></div></div></div>
@@ -223,6 +227,7 @@
         <section class="detail-panel ${activeTab==='comments'?'active':''}" data-panel="comments">${commentsMarkup(i)}</section>
       </div></div>`;
     window.lucide?.createIcons();
+    if (activeTab === 'files') hydrateAttachmentPreviews(i.id);
   }
 
   function overviewMarkup(i, assigned) {
@@ -246,7 +251,17 @@
   function filesMarkup(i) {
     return `<article class="detail-section full"><div class="detail-section-head"><div><i data-lucide="paperclip"></i><h3>Inquiry attachments</h3></div></div>
       <div class="file-upload-grid">${Object.entries(fileKindLabels).slice(0,4).map(([kind,label]) => `<label class="upload-tile"><i data-lucide="upload-cloud"></i><span>${label}</span><input type="file" data-upload-kind="${kind}" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx" multiple></label>`).join('')}</div>
-      <div class="files-list">${(i.inquiry_files||[]).length ? i.inquiry_files.map(f => `<div class="file-row"><span class="file-icon"><i data-lucide="${f.mime_type?.startsWith('image/')?'image':'file-text'}"></i></span><div><strong>${escapeHtml(f.file_name)}</strong><p>${fileKindLabels[f.file_kind]} · ${formatBytes(f.size_bytes)} · ${formatDate(f.created_at)}</p></div><div class="row-actions"><button class="row-action" data-action="download-file" data-id="${f.id}" aria-label="Download"><i data-lucide="download"></i></button><button class="row-action" data-action="delete-file" data-id="${f.id}" aria-label="Delete"><i data-lucide="trash-2"></i></button></div></div>`).join('') : '<div class="empty-inline">No attachments uploaded yet.</div>'}</div></article>`;
+      <div class="files-list">${(i.inquiry_files||[]).length ? i.inquiry_files.map(fileMarkup).join('') : '<div class="empty-inline">No attachments uploaded yet.</div>'}</div></article>`;
+  }
+
+  function fileMarkup(file) {
+    const isImage = file.mime_type?.startsWith('image/');
+    const isPdf = file.mime_type === 'application/pdf';
+    const canPreview = isImage || isPdf;
+    const thumbnail = canPreview
+      ? `<button class="file-thumbnail ${isPdf?'pdf-thumbnail':''}" data-action="preview-file" data-id="${file.id}" aria-label="Preview ${escapeAttr(file.file_name)}"><span class="thumbnail-loading" data-file-preview="${file.id}" data-preview-kind="${isImage?'image':'pdf'}"><i data-lucide="${isImage?'image':'file-text'}"></i>${isPdf?'<b>PDF</b>':''}</span></button>`
+      : `<span class="file-thumbnail static"><span><i data-lucide="file-text"></i></span></span>`;
+    return `<div class="file-row">${thumbnail}<div class="file-copy"><strong>${escapeHtml(file.file_name)}</strong><p>${escapeHtml(fileKindLabels[file.file_kind] || 'Other file')} · ${formatBytes(file.size_bytes)} · ${formatDate(file.created_at)}</p>${canPreview?`<button class="file-preview-link" data-action="preview-file" data-id="${file.id}">Tap to preview</button>`:''}</div><div class="row-actions"><button class="row-action" data-action="download-file" data-id="${file.id}" aria-label="Download"><i data-lucide="download"></i></button><button class="row-action" data-action="delete-file" data-id="${file.id}" aria-label="Delete"><i data-lucide="trash-2"></i></button></div></div>`;
   }
 
   function commentsMarkup(i) {
@@ -267,6 +282,7 @@
       if (type === 'add-product') return openProductForm();
       if (type === 'edit-product') return openProductForm((state.activeInquiry.inquiry_items||[]).find(p=>p.id===id));
       if (type === 'delete-product') return deleteProduct(id);
+      if (type === 'preview-file') return openAttachmentPreview(id);
       if (type === 'download-file') return downloadFile(id);
       if (type === 'delete-file') return deleteFile(id);
     }
@@ -336,6 +352,74 @@
       toast(`${fileList.length} file${fileList.length===1?'':'s'} uploaded`); await refreshActiveInquiry('files');
     } catch (error) { toast(friendlyError(error),'error'); }
     finally { input.disabled=false; input.value=''; }
+  }
+
+  async function hydrateAttachmentPreviews(inquiryId) {
+    const requestId = ++state.attachmentPreviewRequest;
+    const files = (state.activeInquiry?.inquiry_files || []).filter(file => file.mime_type?.startsWith('image/') || file.mime_type === 'application/pdf');
+    if (!files.length) return;
+    try {
+      const { data: { session } } = await db.auth.getSession();
+      if (!session) return;
+      for (const file of files) {
+        if (requestId !== state.attachmentPreviewRequest || inquiryId !== state.activeInquiry?.id) return;
+        const url = await fetchAttachmentUrl(file.id, session.access_token);
+        if (requestId !== state.attachmentPreviewRequest || inquiryId !== state.activeInquiry?.id) { URL.revokeObjectURL(url); return; }
+        state.attachmentPreviewUrls.set(file.id, url);
+        const host = $$('[data-file-preview]').find(node => node.dataset.filePreview === file.id);
+        if (!host) continue;
+        host.replaceChildren();
+        if (file.mime_type?.startsWith('image/')) {
+          const image = document.createElement('img'); image.src = url; image.alt = ''; image.loading = 'lazy'; host.append(image);
+        } else {
+          const object = document.createElement('object'); object.data = `${url}#page=1&view=FitH&toolbar=0&navpanes=0&scrollbar=0`; object.type = 'application/pdf'; object.tabIndex = -1;
+          const fallback = document.createElement('span'); fallback.className = 'pdf-fallback'; fallback.innerHTML = '<b>PDF</b>';
+          object.append(fallback); host.append(object);
+          const badge = document.createElement('b'); badge.className = 'pdf-badge'; badge.textContent = 'PDF'; host.append(badge);
+        }
+      }
+    } catch (error) {
+      if (requestId === state.attachmentPreviewRequest) $$('.thumbnail-loading').forEach(node => node.classList.add('preview-unavailable'));
+    }
+  }
+
+  async function fetchAttachmentUrl(id, accessToken) {
+    const response = await fetch(`${cfg.attachmentApiUrl}/inquiries/${state.activeInquiry.id}/files/${id}`, { headers: { Authorization: `Bearer ${accessToken}` } });
+    if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || 'Preview could not be loaded');
+    return URL.createObjectURL(await response.blob());
+  }
+
+  async function openAttachmentPreview(id) {
+    const file = (state.activeInquiry?.inquiry_files || []).find(item => item.id === id); if (!file) return;
+    const dialog = el('attachmentPreviewDialog'), body = el('attachmentPreviewBody');
+    state.openPreviewFileId = id; el('attachmentPreviewTitle').textContent = file.file_name;
+    body.innerHTML = '<div class="preview-loading"><span class="spinner"></span><strong>Loading preview…</strong></div>';
+    if (!dialog.open) dialog.showModal();
+    try {
+      let url = state.attachmentPreviewUrls.get(id);
+      if (!url) {
+        const { data: { session } } = await db.auth.getSession();
+        if (!session) throw new Error('Sign in is required');
+        url = await fetchAttachmentUrl(id, session.access_token); state.attachmentPreviewUrls.set(id, url);
+      }
+      if (state.openPreviewFileId !== id || !dialog.open) return;
+      body.replaceChildren();
+      if (file.mime_type?.startsWith('image/')) {
+        const image = document.createElement('img'); image.src = url; image.alt = file.file_name; body.append(image);
+      } else if (file.mime_type === 'application/pdf') {
+        const frame = document.createElement('iframe'); frame.src = `${url}#view=FitH`; frame.title = file.file_name; body.append(frame);
+      }
+      el('previewDownloadBtn').dataset.id = id;
+    } catch (error) { body.innerHTML = `<div class="preview-error"><i data-lucide="circle-alert"></i><strong>${escapeHtml(friendlyError(error))}</strong></div>`; window.lucide?.createIcons(); }
+  }
+
+  function closeAttachmentPreview() { state.openPreviewFileId = null; el('attachmentPreviewBody').replaceChildren(); }
+
+  function revokeAttachmentPreviews() {
+    state.attachmentPreviewRequest += 1;
+    state.attachmentPreviewUrls.forEach(url => URL.revokeObjectURL(url));
+    state.attachmentPreviewUrls.clear();
+    if (el('attachmentPreviewDialog')?.open) el('attachmentPreviewDialog').close();
   }
 
   async function downloadFile(id) {
