@@ -1,234 +1,425 @@
-/* Together Tasks — static GitHub Pages client + Supabase backend */
 (() => {
-  "use strict";
+  'use strict';
 
-  const cfg = window.APP_CONFIG || {};
-  const configured = /^https:\/\/.+\.supabase\.co$/.test(cfg.SUPABASE_URL || "") && !String(cfg.SUPABASE_ANON_KEY || "").startsWith("YOUR_");
-  const db = configured ? window.supabase.createClient(cfg.SUPABASE_URL, cfg.SUPABASE_ANON_KEY, {
+  const cfg = window.SCS_CONFIG || {};
+  const db = window.supabase?.createClient(cfg.supabaseUrl, cfg.supabasePublishableKey, {
     auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
-  }) : null;
+  });
 
-  const $ = (id) => document.getElementById(id);
-  const state = { demo: false, user: null, groups: [], group: null, tasks: [], members: [], authMode: "login", view: "dashboard" };
-  const demoKey = "together-tasks-demo-v1";
-  const labels = { dashboard: ["WORKSPACE", "Overview"], tasks: ["ALL WORK", "Tasks"], team: ["PEOPLE", "Team"], settings: ["PREFERENCES", "Settings"] };
+  const state = {
+    user: null, profile: null, profiles: [], inquiries: [], notifications: [],
+    activeInquiry: null, authMode: 'signin', deferredInstall: null,
+    realtimeChannel: null, fieldEdit: null, productEdit: null
+  };
 
-  function escapeHtml(value = "") {
-    return String(value).replace(/[&<>'"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", "'": "&#39;", '"': "&quot;" }[c]));
-  }
-  function initials(name = "User") { return name.split(/\s+/).filter(Boolean).slice(0, 2).map((x) => x[0]).join("").toUpperCase() || "U"; }
-  function toast(message, error = false) {
-    const el = $("toast"); el.textContent = message; el.className = `toast show${error ? " error" : ""}`;
-    clearTimeout(toast.timer); toast.timer = setTimeout(() => { el.className = "toast"; }, 3000);
-  }
-  function todayISO() { return new Date().toISOString().slice(0, 10); }
-  function addDays(n) { const d = new Date(); d.setDate(d.getDate() + n); return d.toISOString().slice(0, 10); }
-  function formatDate(value) { if (!value) return "No due date"; return new Date(`${value}T00:00:00`).toLocaleDateString(undefined, { day: "numeric", month: "short" }); }
-  function uid() { return crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`; }
-  function generateCode() { return Math.random().toString(36).slice(2, 8).toUpperCase(); }
+  const $ = (s, root = document) => root.querySelector(s);
+  const $$ = (s, root = document) => [...root.querySelectorAll(s)];
+  const el = id => document.getElementById(id);
+  const statusLabels = { new: 'New', contacted: 'Contacted', quoted: 'Quoted', won: 'Won', lost: 'Lost', on_hold: 'On hold' };
+  const fileKindLabels = { client_photo: 'Client photos', shared_photo: 'Photos shared to client', quote: 'Quote', payment_proof: 'Payment proof', other: 'Other file' };
+  const fieldMeta = {
+    person_name: { label: 'Person name', required: true }, company_name: { label: 'Company name' }, mobile: { label: 'Mobile', type: 'tel' },
+    email: { label: 'Email', type: 'email' }, customer_address: { label: 'Customer address', type: 'textarea' }, delivery_address: { label: 'Delivery address', type: 'textarea' },
+    status: { label: 'Status', type: 'select', options: statusLabels }, priority: { label: 'Priority', type: 'select', options: { low: 'Low', normal: 'Normal', high: 'High', urgent: 'Urgent' } },
+    source: { label: 'Inquiry source' }, assigned_to: { label: 'Assigned to', type: 'profile' }, quote_amount: { label: 'Quote amount', type: 'number' },
+    quote_currency: { label: 'Quote currency', type: 'select', options: { USD: 'USD', PKR: 'PKR', AED: 'AED', SAR: 'SAR', CNY: 'CNY' } },
+    quote_notes: { label: 'Quote notes', type: 'textarea' }, payment_notes: { label: 'Payment notes', type: 'textarea' }
+  };
 
-  function demoSeed() {
-    const user = { id: "demo-user", email: "ahmad@example.com", user_metadata: { full_name: "Ahmad Iqbal" } };
-    const group = { id: "demo-group", name: "Launch Team", description: "Website launch and client onboarding", invite_code: "TEAM26", owner_id: user.id };
-    const members = [
-      { group_id: group.id, user_id: user.id, role: "owner", profiles: { id: user.id, full_name: "Ahmad Iqbal", email: user.email } },
-      { group_id: group.id, user_id: "demo-2", role: "member", profiles: { id: "demo-2", full_name: "Sara Khan", email: "sara@example.com" } },
-      { group_id: group.id, user_id: "demo-3", role: "member", profiles: { id: "demo-3", full_name: "Usman Ali", email: "usman@example.com" } }
-    ];
-    const tasks = [
-      { id: uid(), group_id: group.id, title: "Finalize mobile homepage", description: "Review the new layout and approve the final copy.", status: "in_progress", priority: "high", due_date: addDays(1), assignee_id: user.id, created_by: user.id },
-      { id: uid(), group_id: group.id, title: "Prepare onboarding checklist", description: "Create the steps a new client should complete in week one.", status: "todo", priority: "medium", due_date: addDays(3), assignee_id: "demo-2", created_by: user.id },
-      { id: uid(), group_id: group.id, title: "Test contact form", description: "Verify validation and confirmation on mobile.", status: "done", priority: "high", due_date: todayISO(), assignee_id: "demo-3", created_by: user.id },
-      { id: uid(), group_id: group.id, title: "Collect launch assets", description: "Logos, product images and final brand files.", status: "todo", priority: "low", due_date: addDays(6), assignee_id: "demo-3", created_by: user.id }
-    ];
-    return { user, groups: [group], groupId: group.id, members, tasks };
-  }
-  function saveDemo() { localStorage.setItem(demoKey, JSON.stringify({ user: state.user, groups: state.groups, groupId: state.group?.id, members: state.members, tasks: state.tasks })); }
-  function loadDemo() {
-    state.demo = true;
-    const saved = JSON.parse(localStorage.getItem(demoKey) || "null") || demoSeed();
-    state.user = saved.user; state.groups = saved.groups; state.group = saved.groups.find((g) => g.id === saved.groupId) || saved.groups[0] || null; state.members = saved.members; state.tasks = saved.tasks;
-    saveDemo(); enterApp();
-  }
+  document.addEventListener('DOMContentLoaded', init);
 
   async function init() {
+    window.lucide?.createIcons();
     bindEvents();
-    if (!configured) { showAuth(); return; }
+    registerPwa();
+    if (!db) return showAuthError('App configuration could not be loaded.');
     const { data: { session } } = await db.auth.getSession();
-    if (session?.user) await startSession(session.user); else showAuth();
+    if (session) await enterApp(session.user);
     db.auth.onAuthStateChange((event, sessionNow) => {
-      if (event === "SIGNED_OUT") showAuth();
-      else if (sessionNow?.user && !state.user) setTimeout(() => startSession(sessionNow.user), 0);
+      if (event === 'SIGNED_OUT') showAuth();
+      if (event === 'SIGNED_IN' && sessionNow?.user && sessionNow.user.id !== state.user?.id) enterApp(sessionNow.user);
     });
   }
 
-  function showAuth() { $("app-view").classList.add("hidden"); $("auth-view").classList.remove("hidden"); }
-  async function startSession(user) {
-    state.demo = false; state.user = user;
-    await loadGroups(); enterApp();
-  }
-  function enterApp() {
-    $("auth-view").classList.add("hidden"); $("app-view").classList.remove("hidden");
-    const name = state.user?.user_metadata?.full_name || state.user?.email?.split("@")[0] || "User";
-    $("user-name").textContent = name; $("user-email").textContent = state.demo ? "Demo preview" : state.user.email;
-    $("user-avatar").textContent = initials(name); $("settings-user-name").textContent = name; $("settings-user-email").textContent = state.user.email || "Demo preview";
-    renderGroupPicker();
-    if (!state.group) { openDialog("group-dialog"); renderAll(); return; }
-    if (state.demo) renderAll(); else loadGroupData().catch((e) => toast(e.message, true));
-  }
-
-  async function loadGroups() {
-    const { data, error } = await db.from("group_members").select("group_id, role, groups(id,name,description,invite_code,owner_id,created_at)").eq("user_id", state.user.id);
-    if (error) throw error;
-    state.groups = (data || []).map((x) => ({ ...x.groups, my_role: x.role })).filter(Boolean);
-    const remembered = localStorage.getItem("together-current-group");
-    state.group = state.groups.find((g) => g.id === remembered) || state.groups[0] || null;
-  }
-  async function loadGroupData() {
-    if (!state.group) return renderAll();
-    const [tasksRes, membersRes] = await Promise.all([
-      db.from("tasks").select("*").eq("group_id", state.group.id).order("created_at", { ascending: false }),
-      db.from("group_members").select("group_id,user_id,role,joined_at,profiles(id,full_name,email,avatar_color)").eq("group_id", state.group.id).order("joined_at")
-    ]);
-    if (tasksRes.error) throw tasksRes.error; if (membersRes.error) throw membersRes.error;
-    state.tasks = tasksRes.data || []; state.members = membersRes.data || []; renderAll();
-  }
-
-  function renderAll() {
-    renderGroupPicker(); renderDashboard(); renderTasks(); renderTeam(); renderSettings(); fillAssignees();
-  }
-  function renderGroupPicker() {
-    const select = $("group-select");
-    select.innerHTML = state.groups.length ? state.groups.map((g) => `<option value="${g.id}" ${g.id === state.group?.id ? "selected" : ""}>${escapeHtml(g.name)}</option>`).join("") : '<option value="">No group yet</option>';
-  }
-  function renderDashboard() {
-    const total = state.tasks.length, done = state.tasks.filter((t) => t.status === "done").length, open = total - done;
-    const soon = state.tasks.filter((t) => t.status !== "done" && t.due_date && t.due_date >= todayISO() && t.due_date <= addDays(3)).length;
-    const percent = total ? Math.round(done / total * 100) : 0;
-    $("stat-open").textContent = open; $("stat-due").textContent = soon; $("stat-done").textContent = done; $("progress-percent").textContent = `${percent}%`;
-    $("progress-ring").style.background = `conic-gradient(var(--brand) ${percent}%,#dfdef1 ${percent}%)`;
-    const name = state.user?.user_metadata?.full_name?.split(" ")[0] || "there";
-    $("greeting").textContent = `Hi ${name}, let’s make progress.`; $("welcome-copy").textContent = state.group ? `${state.group.name} has ${open} open task${open === 1 ? "" : "s"}.` : "Create or join a group to begin.";
-    const priority = [...state.tasks].filter((t) => t.status !== "done").sort(taskSort).slice(0, 4);
-    $("priority-list").innerHTML = priority.length ? priority.map(taskCard).join("") : emptyState("Nothing urgent", "Add a task when your group is ready."); bindTaskCards($("priority-list"));
-  }
-  function taskSort(a, b) {
-    const p = { high: 0, medium: 1, low: 2 };
-    return (p[a.priority] - p[b.priority]) || String(a.due_date || "9999").localeCompare(String(b.due_date || "9999"));
-  }
-  function memberName(id) { const m = state.members.find((x) => x.user_id === id); return m?.profiles?.full_name || (id ? "Team member" : "Unassigned"); }
-  function taskCard(task) {
-    const overdue = task.status !== "done" && task.due_date && task.due_date < todayISO();
-    return `<article class="task-card ${task.status === "done" ? "done" : ""}" data-task="${task.id}">
-      <button class="check" data-toggle="${task.id}" aria-label="${task.status === "done" ? "Reopen" : "Complete"} task">✓</button>
-      <div class="task-main"><h4>${escapeHtml(task.title)}</h4>${task.description ? `<p>${escapeHtml(task.description)}</p>` : ""}<div class="task-meta"><span class="priority-${task.priority}">${escapeHtml(task.priority)}</span><span class="${overdue ? "overdue" : ""}">${overdue ? "Overdue · " : ""}${formatDate(task.due_date)}</span><span>${escapeHtml(memberName(task.assignee_id))}</span></div></div>
-      <div class="task-menu"><button data-edit="${task.id}" title="Edit">✎</button><button data-delete="${task.id}" title="Delete">×</button></div></article>`;
-  }
-  function emptyState(title, copy) { return `<div class="empty"><strong>${escapeHtml(title)}</strong>${escapeHtml(copy)}</div>`; }
-  function renderTasks() {
-    const q = $("task-search").value.trim().toLowerCase(), status = $("status-filter").value, priority = $("priority-filter").value;
-    const rows = [...state.tasks].filter((t) => (!q || `${t.title} ${t.description || ""}`.toLowerCase().includes(q)) && (status === "all" || t.status === status) && (priority === "all" || t.priority === priority)).sort(taskSort);
-    $("task-list").innerHTML = rows.length ? rows.map(taskCard).join("") : emptyState("No matching tasks", "Try changing the filters or add a new task."); bindTaskCards($("task-list"));
-  }
-  function bindTaskCards(root) {
-    root.querySelectorAll("[data-toggle]").forEach((b) => b.onclick = () => toggleTask(b.dataset.toggle));
-    root.querySelectorAll("[data-edit]").forEach((b) => b.onclick = () => editTask(b.dataset.edit));
-    root.querySelectorAll("[data-delete]").forEach((b) => b.onclick = () => deleteTask(b.dataset.delete));
-  }
-  function renderTeam() {
-    $("invite-code").textContent = state.group?.invite_code || "—"; $("member-count").textContent = `${state.members.length} ${state.members.length === 1 ? "person" : "people"}`;
-    $("member-list").innerHTML = state.members.length ? state.members.map((m) => { const p = m.profiles || {}; return `<article class="member-card"><div class="avatar">${escapeHtml(initials(p.full_name || p.email))}</div><div><strong>${escapeHtml(p.full_name || "Team member")}</strong><small>${escapeHtml(p.email || "")} · ${escapeHtml(m.role)}</small></div></article>`; }).join("") : emptyState("No members yet", "Share the group code to invite someone.");
-  }
-  function renderSettings() {
-    $("settings-group-name").textContent = state.group?.name || "No group selected"; $("settings-group-description").textContent = state.group?.description || "Create or join a group to manage shared tasks.";
-  }
-  function fillAssignees() {
-    $("task-assignee").innerHTML = '<option value="">Unassigned</option>' + state.members.map((m) => `<option value="${m.user_id}">${escapeHtml(m.profiles?.full_name || m.profiles?.email || "Member")}</option>`).join("");
+  function bindEvents() {
+    el('authForm').addEventListener('submit', handleAuth);
+    el('authModeToggle').addEventListener('click', toggleAuthMode);
+    el('addInquiryBtn').addEventListener('click', openInquiryForm);
+    el('mobileAddBtn').addEventListener('click', openInquiryForm);
+    document.addEventListener('click', handleDelegatedClick);
+    el('searchInput').addEventListener('input', renderInquiries);
+    el('statusFilter').addEventListener('change', renderInquiries);
+    el('sortSelect').addEventListener('change', renderInquiries);
+    el('notificationBtn').addEventListener('click', () => openPanel('notificationPanel'));
+    el('profileBtn').addEventListener('click', () => openPanel('profilePanel'));
+    el('scrim').addEventListener('click', closePanels);
+    el('signOutBtn').addEventListener('click', () => db.auth.signOut());
+    el('inquiryForm').addEventListener('submit', saveNewInquiry);
+    el('fieldEditForm').addEventListener('submit', saveFieldEdit);
+    el('productForm').addEventListener('submit', saveProduct);
+    el('markAllReadBtn').addEventListener('click', markAllRead);
+    el('enableAlertsBtn').addEventListener('click', enableBrowserAlerts);
+    el('installBtn').addEventListener('click', installPwa);
+    window.addEventListener('online', () => toast('Back online'));
+    window.addEventListener('offline', () => toast('You are offline. Saved pages remain available.', 'error'));
   }
 
   async function handleAuth(event) {
-    event.preventDefault(); if (!configured) return toast("Add your Supabase URL and publishable key in config.js, or use Demo Preview.", true);
-    const email = $("auth-email").value.trim(), password = $("auth-password").value, fullName = $("auth-name").value.trim();
-    $("auth-submit").disabled = true;
-    try {
-      if (state.authMode === "signup") {
-        const { data, error } = await db.auth.signUp({ email, password, options: { data: { full_name: fullName } } }); if (error) throw error;
-        if (!data.session) toast("Check your email to confirm the account."); else await startSession(data.user);
-      } else { const { data, error } = await db.auth.signInWithPassword({ email, password }); if (error) throw error; await startSession(data.user); }
-    } catch (e) { toast(e.message, true); } finally { $("auth-submit").disabled = false; }
-  }
-  function setAuthTab(mode) {
-    state.authMode = mode; document.querySelectorAll("[data-auth-tab]").forEach((b) => b.classList.toggle("active", b.dataset.authTab === mode));
-    $("name-field").classList.toggle("hidden", mode !== "signup"); $("auth-name").required = mode === "signup"; $("auth-submit").textContent = mode === "signup" ? "Create account" : "Sign in";
-    $("auth-password").autocomplete = mode === "signup" ? "new-password" : "current-password";
-  }
-  function switchView(view) {
-    state.view = view; document.querySelectorAll(".screen").forEach((s) => s.classList.add("hidden")); $(`${view}-screen`).classList.remove("hidden");
-    document.querySelectorAll("[data-view]").forEach((b) => b.classList.toggle("active", b.dataset.view === view)); $("page-kicker").textContent = labels[view][0]; $("page-title").textContent = labels[view][1]; window.scrollTo({ top: 0, behavior: "smooth" });
-  }
-  function openDialog(id) { const d = $(id); if (!d.open) d.showModal(); }
-  function openTask(task = null) {
-    if (!state.group) return openDialog("group-dialog");
-    $("task-form").reset(); $("task-id").value = task?.id || ""; $("task-modal-title").textContent = task ? "Edit task" : "Add a task";
-    if (task) { $("task-title").value = task.title; $("task-description").value = task.description || ""; $("task-status").value = task.status; $("task-priority").value = task.priority; $("task-due").value = task.due_date || ""; $("task-assignee").value = task.assignee_id || ""; }
-    openDialog("task-dialog"); setTimeout(() => $("task-title").focus(), 50);
-  }
-  function editTask(id) { openTask(state.tasks.find((t) => t.id === id)); }
-
-  async function saveTask(event) {
     event.preventDefault();
-    const id = $("task-id").value, old = state.tasks.find((t) => t.id === id);
-    const task = { group_id: state.group.id, title: $("task-title").value.trim(), description: $("task-description").value.trim() || null, status: $("task-status").value, priority: $("task-priority").value, due_date: $("task-due").value || null, assignee_id: $("task-assignee").value || null };
-    if (!task.title) return;
+    const button = el('authSubmit');
+    button.disabled = true;
+    el('authMessage').textContent = '';
+    const email = el('authEmail').value.trim();
+    const password = el('authPassword').value;
     try {
-      if (state.demo) {
-        if (old) Object.assign(old, task); else state.tasks.unshift({ ...task, id: uid(), created_by: state.user.id, created_at: new Date().toISOString() }); saveDemo();
+      if (state.authMode === 'signup') {
+        const name = email.split('@')[0].replace(/[._-]+/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
+        const { data, error } = await db.auth.signUp({ email, password, options: { data: { full_name: name } } });
+        if (error) throw error;
+        if (!data.session) el('authMessage').textContent = 'Account created. Check your email to confirm it, then sign in.';
       } else {
-        const query = old ? db.from("tasks").update(task).eq("id", id) : db.from("tasks").insert({ ...task, created_by: state.user.id }); const { error } = await query; if (error) throw error; await loadGroupData();
+        const { error } = await db.auth.signInWithPassword({ email, password });
+        if (error) throw error;
       }
-      $("task-dialog").close(); renderAll(); toast(old ? "Task updated" : "Task added");
-    } catch (e) { toast(e.message, true); }
-  }
-  async function toggleTask(id) {
-    const task = state.tasks.find((t) => t.id === id), status = task.status === "done" ? "todo" : "done";
-    try { if (state.demo) { task.status = status; saveDemo(); } else { const { error } = await db.from("tasks").update({ status }).eq("id", id); if (error) throw error; await loadGroupData(); } renderAll(); } catch (e) { toast(e.message, true); }
-  }
-  async function deleteTask(id) {
-    const task = state.tasks.find((t) => t.id === id); if (!task || !confirm(`Delete “${task.title}”?`)) return;
-    try { if (state.demo) { state.tasks = state.tasks.filter((t) => t.id !== id); saveDemo(); } else { const { error } = await db.from("tasks").delete().eq("id", id); if (error) throw error; await loadGroupData(); } renderAll(); toast("Task deleted"); } catch (e) { toast(e.message, true); }
+    } catch (error) { showAuthError(friendlyError(error)); }
+    finally { button.disabled = false; }
   }
 
-  async function createGroup(event) {
-    event.preventDefault(); const name = $("group-name").value.trim(), description = $("group-description").value.trim();
+  function toggleAuthMode() {
+    state.authMode = state.authMode === 'signin' ? 'signup' : 'signin';
+    const signup = state.authMode === 'signup';
+    $('.auth-card .eyebrow').textContent = signup ? 'Join the team' : 'Welcome back';
+    $('.auth-card h1').textContent = signup ? 'Create your account' : 'Sign in to your workspace';
+    el('authSubmit').textContent = signup ? 'Create account' : 'Sign in';
+    el('authModeToggle').textContent = signup ? 'Already have an account? Sign in' : 'New team member? Create account';
+    el('authPassword').autocomplete = signup ? 'new-password' : 'current-password';
+    el('authMessage').textContent = '';
+  }
+
+  async function enterApp(user) {
+    state.user = user;
+    el('authScreen').classList.add('hidden'); el('app').classList.remove('hidden');
     try {
-      let group;
-      if (state.demo) { group = { id: uid(), name, description, invite_code: generateCode(), owner_id: state.user.id, my_role: "owner" }; state.groups.push(group); state.members = [{ group_id: group.id, user_id: state.user.id, role: "owner", profiles: { id: state.user.id, full_name: state.user.user_metadata.full_name, email: state.user.email } }]; state.tasks = []; state.group = group; saveDemo(); }
-      else { const { data, error } = await db.rpc("create_group", { p_name: name, p_description: description || null }); if (error) throw error; await loadGroups(); group = state.groups.find((g) => g.id === data); state.group = group || state.groups[0]; await loadGroupData(); }
-      localStorage.setItem("together-current-group", state.group.id); $("group-dialog").close(); $("create-group-form").reset(); renderAll(); toast("Group created");
-    } catch (e) { toast(e.message, true); }
+      await Promise.all([loadProfiles(), loadInquiries(), loadNotifications()]);
+      subscribeRealtime();
+    } catch (error) { toast(friendlyError(error), 'error'); }
   }
-  async function joinGroup(event) {
-    event.preventDefault(); const code = $("join-code").value.trim().toUpperCase();
+
+  function showAuth() {
+    state.user = null; state.profile = null; state.inquiries = []; state.notifications = [];
+    if (state.realtimeChannel) db.removeChannel(state.realtimeChannel);
+    closePanels(); el('app').classList.add('hidden'); el('authScreen').classList.remove('hidden');
+  }
+
+  async function loadProfiles() {
+    const { data, error } = await db.from('profiles').select('id,full_name,email,role').order('full_name');
+    if (error) throw error;
+    state.profiles = data || [];
+    state.profile = state.profiles.find(p => p.id === state.user.id) || { full_name: state.user.email?.split('@')[0], email: state.user.email };
+    const initials = initialsFor(state.profile.full_name || state.profile.email);
+    el('avatarInitials').textContent = initials; el('profileAvatar').textContent = initials;
+    el('profileName').textContent = state.profile.full_name || 'Team member'; el('profileEmail').textContent = state.profile.email || '';
+    const assignedSelect = $('#inquiryForm [name="assigned_to"]');
+    assignedSelect.innerHTML = '<option value="">Unassigned</option>' + state.profiles.map(p => `<option value="${p.id}">${escapeHtml(p.full_name || p.email)}</option>`).join('');
+  }
+
+  async function loadInquiries() {
+    el('loadingState').classList.remove('hidden'); el('inquiryGrid').innerHTML = '';
+    const { data, error } = await db.from('inquiries').select('*, inquiry_items(id,product_name,quantity,quantity_unit,details,sort_order)').order('updated_at', { ascending: false });
+    el('loadingState').classList.add('hidden');
+    if (error) throw error;
+    state.inquiries = data || [];
+    renderStats(); renderInquiries();
+  }
+
+  function renderStats() {
+    el('statAll').textContent = state.inquiries.length;
+    el('statNew').textContent = state.inquiries.filter(i => i.status === 'new').length;
+    el('statQuoted').textContent = state.inquiries.filter(i => i.status === 'quoted').length;
+    el('statWon').textContent = state.inquiries.filter(i => i.status === 'won').length;
+  }
+
+  function renderInquiries() {
+    const query = el('searchInput').value.trim().toLowerCase();
+    const status = el('statusFilter').value;
+    const sort = el('sortSelect').value;
+    let rows = state.inquiries.filter(i => {
+      const haystack = [i.person_name, i.company_name, i.mobile, i.email, ...(i.inquiry_items || []).map(p => `${p.product_name} ${p.details}`)].join(' ').toLowerCase();
+      return (!query || haystack.includes(query)) && (status === 'all' || i.status === status);
+    });
+    rows = [...rows].sort((a, b) => sort === 'name_asc' ? a.person_name.localeCompare(b.person_name) : new Date(sort === 'created_desc' ? b.created_at : b.updated_at) - new Date(sort === 'created_desc' ? a.created_at : a.updated_at));
+    el('emptyState').classList.toggle('hidden', rows.length > 0);
+    el('inquiryGrid').innerHTML = rows.map(inquiryCard).join('');
+    window.lucide?.createIcons();
+  }
+
+  function inquiryCard(i) {
+    const product = [...(i.inquiry_items || [])].sort((a,b) => a.sort_order-b.sort_order)[0];
+    const assigned = state.profiles.find(p => p.id === i.assigned_to);
+    const company = i.company_name || 'Individual customer';
+    return `<article class="inquiry-card" data-id="${i.id}">
+      <div class="card-top"><span class="card-number">${formatInquiryNo(i.inquiry_no)}</span><span class="status-pill status-${i.status}">${statusLabels[i.status]}</span></div>
+      <div class="card-title"><div><h2>${escapeHtml(i.person_name)}</h2><p>${escapeHtml(company)}</p></div><span class="person-avatar">${initialsFor(i.person_name)}</span></div>
+      <div class="product-preview"><strong>${escapeHtml(product?.product_name || 'Product not added')}</strong><span>${product ? `${formatQuantity(product.quantity)} ${escapeHtml(product.quantity_unit || '')} · ${(i.inquiry_items || []).length} product${i.inquiry_items.length === 1 ? '' : 's'}` : 'Open inquiry to add product details'}</span></div>
+      <div class="card-meta">${i.mobile ? `<span><i data-lucide="phone"></i>${escapeHtml(i.mobile)}</span>` : ''}<span><i data-lucide="clock-3"></i>${relativeTime(i.updated_at)}</span></div>
+      <div class="tag-row"><span class="priority-pill priority-${i.priority}">${escapeHtml(i.priority)} priority</span>${assigned ? `<span class="priority-pill priority-normal">${escapeHtml(assigned.full_name || assigned.email)}</span>` : ''}</div>
+      <div class="card-actions"><button class="btn soft" data-action="view" data-id="${i.id}"><i data-lucide="eye"></i>View</button><button class="btn ghost" data-action="edit" data-id="${i.id}"><i data-lucide="pencil"></i>Edit</button></div>
+    </article>`;
+  }
+
+  function openInquiryForm() {
+    const form = el('inquiryForm'); form.reset();
+    form.querySelector('[name="quantity_unit"]').value = 'pcs'; form.querySelector('[name="quote_currency"]').value = 'USD';
+    el('inquiryFormDialog').showModal(); window.lucide?.createIcons();
+  }
+
+  async function saveNewInquiry(event) {
+    event.preventDefault();
+    const form = event.currentTarget, button = el('saveInquiryBtn'); button.disabled = true;
+    const fd = new FormData(form);
+    const inquiryPayload = {
+      person_name: clean(fd.get('person_name')), company_name: clean(fd.get('company_name')), mobile: clean(fd.get('mobile')), email: clean(fd.get('email')),
+      customer_address: clean(fd.get('customer_address')), delivery_address: clean(fd.get('delivery_address')), status: fd.get('status'), priority: fd.get('priority'), source: clean(fd.get('source')),
+      quote_amount: numberOrNull(fd.get('quote_amount')), quote_currency: fd.get('quote_currency'), quote_notes: clean(fd.get('quote_notes')), payment_notes: clean(fd.get('payment_notes')),
+      assigned_to: fd.get('assigned_to') || null, created_by: state.user.id
+    };
     try {
-      if (state.demo) return toast("Demo preview cannot join another person’s group. Connect Supabase to use invite codes.", true);
-      const { data, error } = await db.rpc("join_group", { p_invite_code: code }); if (error) throw error; await loadGroups(); state.group = state.groups.find((g) => g.id === data) || state.groups[0]; localStorage.setItem("together-current-group", state.group.id); await loadGroupData(); $("group-dialog").close(); toast("Group joined");
-    } catch (e) { toast(e.message, true); }
-  }
-  function setGroupTab(tab) { document.querySelectorAll("[data-group-tab]").forEach((b) => b.classList.toggle("active", b.dataset.groupTab === tab)); $("create-group-form").classList.toggle("hidden", tab !== "create"); $("join-group-form").classList.toggle("hidden", tab !== "join"); }
-
-  function bindEvents() {
-    $("auth-form").addEventListener("submit", handleAuth); $("demo-button").onclick = loadDemo;
-    document.querySelectorAll("[data-auth-tab]").forEach((b) => b.onclick = () => setAuthTab(b.dataset.authTab));
-    document.querySelectorAll("[data-view]").forEach((b) => b.onclick = () => switchView(b.dataset.view)); document.querySelectorAll("[data-jump]").forEach((b) => b.onclick = () => switchView(b.dataset.jump));
-    $("open-task").onclick = () => openTask(); $("open-task-mobile").onclick = () => openTask(); $("open-group").onclick = () => openDialog("group-dialog"); $("settings-group-action").onclick = () => openDialog("group-dialog");
-    document.querySelectorAll("[data-close]").forEach((b) => b.onclick = () => $(b.dataset.close).close()); document.querySelectorAll("dialog").forEach((d) => d.addEventListener("click", (e) => { if (e.target === d) d.close(); }));
-    $("task-form").addEventListener("submit", saveTask); $("create-group-form").addEventListener("submit", createGroup); $("join-group-form").addEventListener("submit", joinGroup);
-    document.querySelectorAll("[data-group-tab]").forEach((b) => b.onclick = () => setGroupTab(b.dataset.groupTab));
-    [$("task-search"), $("status-filter"), $("priority-filter")].forEach((el) => el.addEventListener(el.tagName === "INPUT" ? "input" : "change", renderTasks));
-    $("group-select").onchange = async (e) => { state.group = state.groups.find((g) => g.id === e.target.value) || null; if (state.group) localStorage.setItem("together-current-group", state.group.id); if (state.demo) { const saved = JSON.parse(localStorage.getItem(demoKey)); state.tasks = (saved.tasks || []).filter((t) => t.group_id === state.group.id); state.members = (saved.members || []).filter((m) => m.group_id === state.group.id); renderAll(); } else await loadGroupData(); };
-    $("copy-code").onclick = async () => { if (!state.group) return; await navigator.clipboard.writeText(state.group.invite_code); toast("Invite code copied"); };
-    $("sign-out").onclick = async () => { if (state.demo) { state.demo = false; state.user = null; } else await db.auth.signOut(); showAuth(); };
+      const { data: inquiry, error } = await db.from('inquiries').insert(inquiryPayload).select().single(); if (error) throw error;
+      const productName = clean(fd.get('product_name'));
+      if (productName) {
+        const { error: itemError } = await db.from('inquiry_items').insert({ inquiry_id: inquiry.id, product_name: productName, quantity: numberOrNull(fd.get('quantity')), quantity_unit: clean(fd.get('quantity_unit')) || 'pcs', details: clean(fd.get('product_details')) });
+        if (itemError) throw itemError;
+      }
+      el('inquiryFormDialog').close(); toast(`${formatInquiryNo(inquiry.inquiry_no)} created`); await loadInquiries();
+    } catch (error) { toast(friendlyError(error), 'error'); }
+    finally { button.disabled = false; }
   }
 
-  init().catch((e) => { console.error(e); toast(e.message || "The app could not start.", true); showAuth(); });
+  async function openInquiryDetail(id, editHint = false) {
+    try {
+      const [inquiryRes, fileRes, commentRes] = await Promise.all([
+        db.from('inquiries').select('*, inquiry_items(*)').eq('id', id).single(),
+        db.from('inquiry_files').select('*').eq('inquiry_id', id).order('created_at', { ascending: false }),
+        db.from('inquiry_comments').select('*, author:profiles!inquiry_comments_author_id_fkey(full_name,email)').eq('inquiry_id', id).order('created_at')
+      ]);
+      if (inquiryRes.error) throw inquiryRes.error; if (fileRes.error) throw fileRes.error; if (commentRes.error) throw commentRes.error;
+      state.activeInquiry = { ...inquiryRes.data, inquiry_files: fileRes.data || [], inquiry_comments: commentRes.data || [] };
+      renderInquiryDetail();
+      const dialog = el('inquiryDetailDialog'); if (!dialog.open) dialog.showModal();
+      if (editHint) toast('Tap any pencil icon to edit that detail.');
+    } catch (error) { toast(friendlyError(error), 'error'); }
+  }
+
+  function renderInquiryDetail(activeTab = 'overview') {
+    const i = state.activeInquiry; if (!i) return;
+    const assigned = state.profiles.find(p => p.id === i.assigned_to);
+    el('inquiryDetailContent').innerHTML = `<div class="detail-wrap">
+      <div class="detail-hero"><div class="detail-hero-top"><span class="card-number">${formatInquiryNo(i.inquiry_no)} · Added ${formatDate(i.created_at)}</span><button class="icon-btn" data-dialog-close="inquiryDetailDialog" aria-label="Close"><i data-lucide="x"></i></button></div><div class="detail-title-row"><div><h2>${escapeHtml(i.person_name)}</h2><p>${escapeHtml(i.company_name || 'Individual customer')}</p></div><div class="tag-row"><span class="status-pill status-${i.status}">${statusLabels[i.status]}</span><span class="priority-pill priority-${i.priority}">${escapeHtml(i.priority)}</span></div></div></div>
+      <nav class="detail-tabs" aria-label="Inquiry details"><button class="detail-tab ${activeTab==='overview'?'active':''}" data-detail-tab="overview">Overview</button><button class="detail-tab ${activeTab==='products'?'active':''}" data-detail-tab="products">Products (${(i.inquiry_items||[]).length})</button><button class="detail-tab ${activeTab==='files'?'active':''}" data-detail-tab="files">Attachments (${(i.inquiry_files||[]).length})</button><button class="detail-tab ${activeTab==='comments'?'active':''}" data-detail-tab="comments">Comments (${(i.inquiry_comments||[]).length})</button></nav>
+      <div class="detail-scroll">
+        <section class="detail-panel ${activeTab==='overview'?'active':''}" data-panel="overview">${overviewMarkup(i,assigned)}</section>
+        <section class="detail-panel ${activeTab==='products'?'active':''}" data-panel="products">${productsMarkup(i)}</section>
+        <section class="detail-panel ${activeTab==='files'?'active':''}" data-panel="files">${filesMarkup(i)}</section>
+        <section class="detail-panel ${activeTab==='comments'?'active':''}" data-panel="comments">${commentsMarkup(i)}</section>
+      </div></div>`;
+    window.lucide?.createIcons();
+  }
+
+  function overviewMarkup(i, assigned) {
+    return `<div class="detail-grid">
+      ${detailSection('user-round','Customer & contact', [['person_name',i.person_name],['company_name',i.company_name],['mobile',i.mobile],['email',i.email]])}
+      ${detailSection('map-pin','Addresses', [['customer_address',i.customer_address],['delivery_address',i.delivery_address]])}
+      ${detailSection('badge-dollar-sign','Quote & payment', [['quote_amount',formatMoney(i.quote_amount,i.quote_currency),i.quote_amount],['quote_currency',i.quote_currency],['quote_notes',i.quote_notes],['payment_notes',i.payment_notes]], true)}
+      ${detailSection('sliders-horizontal','Management', [['status',statusLabels[i.status],i.status],['priority',capitalize(i.priority),i.priority],['source',i.source],['assigned_to',assigned?.full_name||assigned?.email||'Unassigned',i.assigned_to]], true)}
+    </div>`;
+  }
+
+  function detailSection(icon,title,rows) {
+    return `<article class="detail-section"><div class="detail-section-head"><div><i data-lucide="${icon}"></i><h3>${title}</h3></div></div><div class="field-list">${rows.map(([field,display,raw]) => `<div class="field-row"><div><label>${fieldMeta[field].label}</label><p>${escapeHtml(display || 'Not added')}</p></div><button class="edit-field-btn" data-action="edit-field" data-field="${field}" data-value="${escapeAttr(raw ?? display ?? '')}" aria-label="Edit ${fieldMeta[field].label}"><i data-lucide="pencil"></i></button></div>`).join('')}</div></article>`;
+  }
+
+  function productsMarkup(i) {
+    const products = [...(i.inquiry_items||[])].sort((a,b)=>a.sort_order-b.sort_order);
+    return `<article class="detail-section full"><div class="detail-section-head"><div><i data-lucide="package-open"></i><h3>Products requested</h3></div><button class="btn soft small" data-action="add-product"><i data-lucide="plus"></i>Add product</button></div><div class="products-list">${products.length ? products.map(p => `<div class="product-row"><span class="product-icon"><i data-lucide="package"></i></span><div><strong>${escapeHtml(p.product_name)}</strong><p>${formatQuantity(p.quantity)} ${escapeHtml(p.quantity_unit||'')} ${p.details?`· ${escapeHtml(p.details)}`:''}</p></div><div class="row-actions"><button class="row-action" data-action="edit-product" data-id="${p.id}" aria-label="Edit product"><i data-lucide="pencil"></i></button><button class="row-action" data-action="delete-product" data-id="${p.id}" aria-label="Delete product"><i data-lucide="trash-2"></i></button></div></div>`).join('') : '<div class="empty-inline">No products added yet.</div>'}</div></article>`;
+  }
+
+  function filesMarkup(i) {
+    return `<article class="detail-section full"><div class="detail-section-head"><div><i data-lucide="paperclip"></i><h3>Inquiry attachments</h3></div></div>
+      <div class="file-upload-grid">${Object.entries(fileKindLabels).slice(0,4).map(([kind,label]) => `<label class="upload-tile"><i data-lucide="upload-cloud"></i><span>${label}</span><input type="file" data-upload-kind="${kind}" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx" multiple></label>`).join('')}</div>
+      <div class="files-list">${(i.inquiry_files||[]).length ? i.inquiry_files.map(f => `<div class="file-row"><span class="file-icon"><i data-lucide="${f.mime_type?.startsWith('image/')?'image':'file-text'}"></i></span><div><strong>${escapeHtml(f.file_name)}</strong><p>${fileKindLabels[f.file_kind]} · ${formatBytes(f.size_bytes)} · ${formatDate(f.created_at)}</p></div><div class="row-actions"><button class="row-action" data-action="download-file" data-id="${f.id}" aria-label="Download"><i data-lucide="download"></i></button><button class="row-action" data-action="delete-file" data-id="${f.id}" aria-label="Delete"><i data-lucide="trash-2"></i></button></div></div>`).join('') : '<div class="empty-inline">No attachments uploaded yet.</div>'}</div></article>`;
+  }
+
+  function commentsMarkup(i) {
+    return `<div class="comments-shell"><article class="detail-section"><div class="detail-section-head"><div><i data-lucide="messages-square"></i><h3>Team conversation</h3></div></div><div class="comments-list">${(i.inquiry_comments||[]).length ? i.inquiry_comments.map(c => `<div class="comment-card"><div class="comment-head"><strong>${escapeHtml(c.author?.full_name||c.author?.email||'Team member')}</strong><time>${formatDateTime(c.created_at)}</time></div><p>${escapeHtml(c.body)}</p></div>`).join('') : '<div class="empty-inline">No comments yet. Start the conversation.</div>'}</div></article><form id="commentForm" class="comment-composer"><h3>Add a comment</h3><p class="muted">Every team member will receive a notification.</p><textarea name="body" maxlength="3000" required placeholder="Write an update, question or note…"></textarea><button class="btn primary wide" type="submit"><i data-lucide="send"></i>Post comment</button></form></div>`;
+  }
+
+  function handleDelegatedClick(event) {
+    const close = event.target.closest('[data-close]'); if (close) return closePanels();
+    const dialogClose = event.target.closest('[data-dialog-close]'); if (dialogClose) return el(dialogClose.dataset.dialogClose).close();
+    const tab = event.target.closest('[data-detail-tab]'); if (tab) return renderInquiryDetail(tab.dataset.detailTab);
+    const action = event.target.closest('[data-action]');
+    if (action) {
+      const id = action.dataset.id, type = action.dataset.action;
+      if (type === 'add-inquiry') return openInquiryForm();
+      if (type === 'view') return openInquiryDetail(id);
+      if (type === 'edit') return openInquiryDetail(id, true);
+      if (type === 'edit-field') return openFieldEdit(action.dataset.field, action.dataset.value);
+      if (type === 'add-product') return openProductForm();
+      if (type === 'edit-product') return openProductForm((state.activeInquiry.inquiry_items||[]).find(p=>p.id===id));
+      if (type === 'delete-product') return deleteProduct(id);
+      if (type === 'download-file') return downloadFile(id);
+      if (type === 'delete-file') return deleteFile(id);
+    }
+    const notification = event.target.closest('.notification-item'); if (notification) openNotification(notification.dataset.id, notification.dataset.inquiryId);
+  }
+
+  document.addEventListener('change', event => {
+    const input = event.target.closest('[data-upload-kind]');
+    if (input?.files?.length) uploadFiles(input.files, input.dataset.uploadKind, input);
+  });
+  document.addEventListener('submit', event => { if (event.target.id === 'commentForm') { event.preventDefault(); addComment(event.target); } });
+
+  function openFieldEdit(field, value) {
+    const meta = fieldMeta[field]; state.fieldEdit = { field };
+    el('fieldEditTitle').textContent = meta.label;
+    let control;
+    if (meta.type === 'textarea') control = `<label>${meta.label}<textarea name="value" rows="5" ${meta.required?'required':''}>${escapeHtml(value)}</textarea></label>`;
+    else if (meta.type === 'select') control = `<label>${meta.label}<select name="value">${Object.entries(meta.options).map(([v,l])=>`<option value="${v}" ${v===value?'selected':''}>${l}</option>`).join('')}</select></label>`;
+    else if (meta.type === 'profile') control = `<label>${meta.label}<select name="value"><option value="">Unassigned</option>${state.profiles.map(p=>`<option value="${p.id}" ${p.id===value?'selected':''}>${escapeHtml(p.full_name||p.email)}</option>`).join('')}</select></label>`;
+    else control = `<label>${meta.label}<input name="value" type="${meta.type||'text'}" value="${escapeAttr(value)}" ${meta.required?'required':''} ${meta.type==='number'?'min="0" step="0.01"':''}></label>`;
+    el('fieldEditControl').innerHTML = control; el('fieldEditDialog').showModal(); setTimeout(()=>$('#fieldEditControl [name="value"]')?.focus(),50);
+  }
+
+  async function saveFieldEdit(event) {
+    event.preventDefault(); const field = state.fieldEdit?.field; if (!field || !state.activeInquiry) return;
+    let value = new FormData(event.currentTarget).get('value');
+    if (field === 'assigned_to') value = value || null; else if (field === 'quote_amount') value = numberOrNull(value); else value = clean(value);
+    try {
+      const { error } = await db.from('inquiries').update({ [field]: value }).eq('id', state.activeInquiry.id); if (error) throw error;
+      el('fieldEditDialog').close(); toast(`${fieldMeta[field].label} updated`); await refreshActiveInquiry('overview');
+    } catch (error) { toast(friendlyError(error), 'error'); }
+  }
+
+  function openProductForm(product = null) {
+    state.productEdit = product || null; const form = el('productForm'); form.reset(); form.quantity_unit.value = 'pcs';
+    el('productFormTitle').textContent = product ? 'Edit product' : 'Add product';
+    if (product) { form.product_name.value=product.product_name; form.quantity.value=product.quantity??''; form.quantity_unit.value=product.quantity_unit||'pcs'; form.details.value=product.details||''; }
+    el('productDialog').showModal();
+  }
+
+  async function saveProduct(event) {
+    event.preventDefault(); const fd = new FormData(event.currentTarget), payload = { product_name: clean(fd.get('product_name')), quantity: numberOrNull(fd.get('quantity')), quantity_unit: clean(fd.get('quantity_unit'))||'pcs', details: clean(fd.get('details')) };
+    try {
+      let result;
+      if (state.productEdit) result = await db.from('inquiry_items').update(payload).eq('id', state.productEdit.id);
+      else result = await db.from('inquiry_items').insert({ ...payload, inquiry_id: state.activeInquiry.id, sort_order: state.activeInquiry.inquiry_items?.length || 0 });
+      if (result.error) throw result.error; el('productDialog').close(); toast('Product saved'); await refreshActiveInquiry('products');
+    } catch (error) { toast(friendlyError(error), 'error'); }
+  }
+
+  async function deleteProduct(id) {
+    if (!confirm('Delete this product from the inquiry?')) return;
+    const { error } = await db.from('inquiry_items').delete().eq('id', id); if (error) return toast(friendlyError(error),'error');
+    toast('Product deleted'); await refreshActiveInquiry('products');
+  }
+
+  async function uploadFiles(fileList, kind, input) {
+    if (!cfg.attachmentApiUrl) return toast('Attachment service is not configured.', 'error');
+    input.disabled = true;
+    try {
+      const { data: { session } } = await db.auth.getSession();
+      for (const file of [...fileList]) {
+        const body = new FormData(); body.append('file',file); body.append('file_kind',kind);
+        const response = await fetch(`${cfg.attachmentApiUrl}/inquiries/${state.activeInquiry.id}/files`, { method:'POST', headers:{ Authorization:`Bearer ${session.access_token}` }, body });
+        if (!response.ok) throw new Error((await response.json().catch(()=>({}))).error || `Upload failed (${response.status})`);
+      }
+      toast(`${fileList.length} file${fileList.length===1?'':'s'} uploaded`); await refreshActiveInquiry('files');
+    } catch (error) { toast(friendlyError(error),'error'); }
+    finally { input.disabled=false; input.value=''; }
+  }
+
+  async function downloadFile(id) {
+    try {
+      const { data: { session } } = await db.auth.getSession();
+      const response = await fetch(`${cfg.attachmentApiUrl}/inquiries/${state.activeInquiry.id}/files/${id}`, { headers:{ Authorization:`Bearer ${session.access_token}` } });
+      if (!response.ok) throw new Error((await response.json().catch(()=>({}))).error || 'Download failed');
+      const blob = await response.blob(), url = URL.createObjectURL(blob), a = document.createElement('a');
+      a.href=url; a.download=state.activeInquiry.inquiry_files.find(f=>f.id===id)?.file_name||'attachment'; a.click(); setTimeout(()=>URL.revokeObjectURL(url),1000);
+    } catch(error){ toast(friendlyError(error),'error'); }
+  }
+
+  async function deleteFile(id) {
+    if (!confirm('Delete this attachment permanently?')) return;
+    try {
+      const { data: { session } } = await db.auth.getSession();
+      const response = await fetch(`${cfg.attachmentApiUrl}/inquiries/${state.activeInquiry.id}/files/${id}`, { method:'DELETE', headers:{ Authorization:`Bearer ${session.access_token}` } });
+      if (!response.ok) throw new Error((await response.json().catch(()=>({}))).error || 'Delete failed');
+      toast('Attachment deleted'); await refreshActiveInquiry('files');
+    } catch(error){ toast(friendlyError(error),'error'); }
+  }
+
+  async function addComment(form) {
+    const body = clean(new FormData(form).get('body')); if (!body) return;
+    const button=form.querySelector('button'); button.disabled=true;
+    try {
+      const { error }=await db.from('inquiry_comments').insert({ inquiry_id:state.activeInquiry.id, body, author_id:state.user.id }); if(error) throw error;
+      form.reset(); toast('Comment posted — team notified'); await refreshActiveInquiry('comments');
+    } catch(error){toast(friendlyError(error),'error')} finally{button.disabled=false}
+  }
+
+  async function refreshActiveInquiry(tab) {
+    const id=state.activeInquiry.id; await loadInquiries(); await openInquiryDetail(id); renderInquiryDetail(tab);
+  }
+
+  async function loadNotifications() {
+    const { data,error }=await db.from('notifications').select('*').order('created_at',{ascending:false}).limit(80); if(error) throw error;
+    state.notifications=data||[]; renderNotifications();
+  }
+
+  function renderNotifications() {
+    const unread=state.notifications.filter(n=>!n.is_read).length; el('notificationCount').textContent=unread>99?'99+':unread; el('notificationCount').classList.toggle('hidden',!unread);
+    el('notificationList').innerHTML=state.notifications.length?state.notifications.map(n=>`<article class="notification-item ${n.is_read?'':'unread'}" data-id="${n.id}" data-inquiry-id="${n.inquiry_id||''}"><span class="notification-dot"></span><div><strong>${escapeHtml(n.title)}</strong><p>${escapeHtml(n.message)}</p><time>${relativeTime(n.created_at)}</time></div></article>`).join(''):'<div class="empty-inline">You are all caught up.</div>';
+  }
+
+  function subscribeRealtime() {
+    if(state.realtimeChannel) db.removeChannel(state.realtimeChannel);
+    state.realtimeChannel=db.channel(`notifications:${state.user.id}`).on('postgres_changes',{event:'INSERT',schema:'public',table:'notifications',filter:`recipient_id=eq.${state.user.id}`},payload=>{
+      state.notifications.unshift(payload.new); renderNotifications(); toast(payload.new.title); showSystemNotification(payload.new);
+    }).subscribe();
+  }
+
+  async function openNotification(id,inquiryId) {
+    const item=state.notifications.find(n=>n.id===id); if(item&&!item.is_read){await db.from('notifications').update({is_read:true}).eq('id',id);item.is_read=true;renderNotifications()}
+    closePanels(); if(inquiryId) openInquiryDetail(inquiryId);
+  }
+  async function markAllRead(){const ids=state.notifications.filter(n=>!n.is_read).map(n=>n.id);if(!ids.length)return;const{error}=await db.from('notifications').update({is_read:true}).in('id',ids);if(error)return toast(friendlyError(error),'error');state.notifications.forEach(n=>n.is_read=true);renderNotifications()}
+  async function enableBrowserAlerts(){if(!('Notification'in window))return toast('Browser alerts are not supported here.','error');const p=await Notification.requestPermission();toast(p==='granted'?'Browser alerts enabled':'Notification permission was not enabled',p==='granted'?'':'error')}
+  async function showSystemNotification(n){if(!('Notification'in window)||Notification.permission!=='granted')return;const reg=await navigator.serviceWorker?.ready.catch(()=>null);if(reg)reg.showNotification(n.title,{body:n.message,icon:'assets/icon-192.png',badge:'assets/icon-192.png',tag:n.id,data:{inquiryId:n.inquiry_id}});else new Notification(n.title,{body:n.message})}
+
+  function openPanel(id){closePanels();el(id).classList.add('open');el(id).setAttribute('aria-hidden','false');el('scrim').classList.remove('hidden')}
+  function closePanels(){$$('.side-panel').forEach(p=>{p.classList.remove('open');p.setAttribute('aria-hidden','true')});el('scrim').classList.add('hidden')}
+
+  function registerPwa(){
+    if('serviceWorker'in navigator)navigator.serviceWorker.register('service-worker.js').catch(()=>{});
+    window.addEventListener('beforeinstallprompt',e=>{e.preventDefault();state.deferredInstall=e;el('installBtn').classList.remove('hidden')});
+    window.addEventListener('appinstalled',()=>{state.deferredInstall=null;el('installBtn').classList.add('hidden');toast('SCS Workspace installed')});
+  }
+  async function installPwa(){if(!state.deferredInstall)return;state.deferredInstall.prompt();await state.deferredInstall.userChoice;state.deferredInstall=null;el('installBtn').classList.add('hidden')}
+
+  function toast(message,type='success'){const node=document.createElement('div');node.className=`toast ${type==='error'?'error':''}`;node.textContent=message;el('toastRegion').append(node);setTimeout(()=>node.remove(),4200)}
+  function showAuthError(message){el('authMessage').textContent=message}
+  function friendlyError(error){const msg=error?.message||String(error||'Something went wrong');if(/invalid login/i.test(msg))return'Email or password is incorrect.';if(/fetch/i.test(msg))return'Could not connect. Check your internet connection.';return msg}
+  function clean(v){return String(v??'').trim()}
+  function numberOrNull(v){return clean(v)===''?null:Number(v)}
+  function initialsFor(v){const parts=clean(v).split(/\s+/).filter(Boolean);return((parts[0]?.[0]||'S')+(parts[1]?.[0]||parts[0]?.[1]||'C')).toUpperCase().slice(0,2)}
+  function escapeHtml(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
+  function escapeAttr(v){return escapeHtml(v).replace(/`/g,'&#96;')}
+  function capitalize(v){v=String(v||'');return v.charAt(0).toUpperCase()+v.slice(1)}
+  function formatInquiryNo(n){return `INQ-${String(n).padStart(4,'0')}`}
+  function formatQuantity(v){return v==null?'Quantity not set':Number(v).toLocaleString(undefined,{maximumFractionDigits:3})}
+  function formatMoney(v,c){return v==null?'Not added':`${c||''} ${Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`.trim()}
+  function formatBytes(v){const n=Number(v||0);if(n<1024)return`${n} B`;if(n<1048576)return`${(n/1024).toFixed(1)} KB`;return`${(n/1048576).toFixed(1)} MB`}
+  function formatDate(v){return new Intl.DateTimeFormat(undefined,{day:'numeric',month:'short',year:'numeric'}).format(new Date(v))}
+  function formatDateTime(v){return new Intl.DateTimeFormat(undefined,{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'}).format(new Date(v))}
+  function relativeTime(v){const diff=new Date(v)-new Date(),abs=Math.abs(diff);let unit='minute',amount=Math.round(diff/60000);if(abs>=86400000){unit='day';amount=Math.round(diff/86400000)}else if(abs>=3600000){unit='hour';amount=Math.round(diff/3600000)}if(Math.abs(amount)<1)return'just now';return new Intl.RelativeTimeFormat(undefined,{numeric:'auto'}).format(amount,unit)}
 })();
