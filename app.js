@@ -7,9 +7,9 @@
   });
 
   const state = {
-    user: null, profile: null, profiles: [], inquiries: [], notifications: [],
+    user: null, profile: null, profiles: [], inquiries: [], tasks: [], notifications: [],
     activeInquiry: null, authMode: 'signin', deferredInstall: null,
-    realtimeChannel: null, fieldEdit: null, productEdit: null,
+    realtimeChannel: null, fieldEdit: null, productEdit: null, taskEdit: null, currentView: 'inquiries',
     attachmentPreviewUrls: new Map(), attachmentPreviewRequest: 0, openPreviewFileId: null
   };
 
@@ -46,7 +46,7 @@
     el('authForm').addEventListener('submit', handleAuth);
     el('authModeToggle').addEventListener('click', toggleAuthMode);
     el('addInquiryBtn').addEventListener('click', openInquiryForm);
-    el('mobileAddBtn').addEventListener('click', openInquiryForm);
+    el('mobileAddBtn').addEventListener('click', () => state.currentView === 'tasks' ? openTaskForm() : openInquiryForm());
     document.addEventListener('click', handleDelegatedClick);
     el('searchInput').addEventListener('input', renderInquiries);
     el('statusFilter').addEventListener('change', renderInquiries);
@@ -58,6 +58,10 @@
     el('inquiryForm').addEventListener('submit', saveNewInquiry);
     el('fieldEditForm').addEventListener('submit', saveFieldEdit);
     el('productForm').addEventListener('submit', saveProduct);
+    el('taskForm').addEventListener('submit', saveTask);
+    el('taskSearchInput').addEventListener('input', renderTasks);
+    el('taskOwnerFilter').addEventListener('change', renderTasks);
+    el('taskStatusFilter').addEventListener('change', renderTasks);
     el('markAllReadBtn').addEventListener('click', markAllRead);
     el('enableAlertsBtn').addEventListener('click', enableBrowserAlerts);
     el('installBtn').addEventListener('click', installPwa);
@@ -103,13 +107,14 @@
     state.user = user;
     el('authScreen').classList.add('hidden'); el('app').classList.remove('hidden');
     try {
-      await Promise.all([loadProfiles(), loadInquiries(), loadNotifications()]);
+      await loadProfiles();
+      await Promise.all([loadInquiries(), loadTasks(), loadNotifications()]);
       subscribeRealtime();
     } catch (error) { toast(friendlyError(error), 'error'); }
   }
 
   function showAuth() {
-    state.user = null; state.profile = null; state.inquiries = []; state.notifications = [];
+    state.user = null; state.profile = null; state.inquiries = []; state.tasks = []; state.notifications = [];
     if (state.realtimeChannel) db.removeChannel(state.realtimeChannel);
     closePanels(); el('app').classList.add('hidden'); el('authScreen').classList.remove('hidden');
   }
@@ -135,11 +140,50 @@
     renderStats(); renderInquiries();
   }
 
+  async function loadTasks() {
+    const { data, error } = await db.from('tasks').select('*, assignee:profiles!tasks_assigned_to_fkey(id,full_name,email), inquiry:inquiries!tasks_inquiry_id_fkey(id,inquiry_no,person_name,company_name)').order('created_at', { ascending: false });
+    if (error) throw error;
+    state.tasks = data || [];
+    renderTaskStats(); renderTasks();
+  }
+
   function renderStats() {
     el('statAll').textContent = state.inquiries.length;
     el('statNew').textContent = state.inquiries.filter(i => i.status === 'new').length;
     el('statQuoted').textContent = state.inquiries.filter(i => i.status === 'quoted').length;
     el('statWon').textContent = state.inquiries.filter(i => i.status === 'won').length;
+  }
+
+  function renderTaskStats() {
+    const now = new Date(); now.setHours(0,0,0,0);
+    const open = state.tasks.filter(t => t.status !== 'done');
+    const mine = open.filter(t => t.assigned_to === state.user?.id);
+    const overdue = open.filter(t => t.due_date && new Date(`${t.due_date}T00:00:00`) < now);
+    el('taskStatOpen').textContent = open.length; el('taskStatMine').textContent = mine.length;
+    el('taskStatOverdue').textContent = overdue.length; el('taskStatDone').textContent = state.tasks.length - open.length;
+    el('myTaskBadge').textContent = mine.length;
+  }
+
+  function renderTasks() {
+    const list = el('taskList'); if (!list || !state.user) return;
+    const query = el('taskSearchInput').value.trim().toLowerCase(), owner = el('taskOwnerFilter').value, status = el('taskStatusFilter').value;
+    let tasks = state.tasks.filter(t => {
+      const haystack = [t.title,t.description,t.inquiry?.person_name,t.inquiry?.company_name,formatInquiryNo(t.inquiry?.inquiry_no)].join(' ').toLowerCase();
+      const ownerMatch = owner === 'all' || (owner === 'mine' && t.assigned_to === state.user.id) || (owner === 'unassigned' && !t.assigned_to);
+      const statusMatch = status === 'all' || (status === 'open' && t.status !== 'done') || t.status === status;
+      return ownerMatch && statusMatch && (!query || haystack.includes(query));
+    });
+    tasks.sort((a,b) => (a.status === 'done') - (b.status === 'done') || taskDueSort(a,b) || new Date(b.created_at)-new Date(a.created_at));
+    el('taskEmptyState').classList.toggle('hidden', tasks.length > 0);
+    list.innerHTML = tasks.map(taskCardMarkup).join(''); window.lucide?.createIcons();
+  }
+
+  function taskDueSort(a,b) { return a.due_date && b.due_date ? a.due_date.localeCompare(b.due_date) : a.due_date ? -1 : b.due_date ? 1 : 0; }
+
+  function taskCardMarkup(task, compact = false) {
+    const overdue = task.status !== 'done' && task.due_date && new Date(`${task.due_date}T23:59:59`) < new Date();
+    const assignee = task.assignee || state.profiles.find(p => p.id === task.assigned_to);
+    return `<article class="task-card ${task.status==='done'?'completed':''} ${overdue?'overdue':''}"><button class="task-check" data-action="toggle-task" data-id="${task.id}" aria-label="${task.status==='done'?'Reopen':'Complete'} task"><i data-lucide="${task.status==='done'?'circle-check-big':'circle'}"></i></button><div class="task-card-copy"><div class="task-title-line"><strong>${escapeHtml(task.title)}</strong><span class="task-status status-${task.status}">${taskStatusLabel(task.status)}</span></div>${task.description?`<p>${escapeHtml(task.description)}</p>`:''}<div class="task-meta"><button data-action="view-task-inquiry" data-id="${task.inquiry_id}"><i data-lucide="package-search"></i>${formatInquiryNo(task.inquiry?.inquiry_no || state.activeInquiry?.inquiry_no)} · ${escapeHtml(task.inquiry?.person_name || state.activeInquiry?.person_name || 'Order')}</button><span><i data-lucide="user-round"></i>${escapeHtml(assignee?.full_name || assignee?.email || 'Unassigned')}</span>${task.due_date?`<span class="${overdue?'due-overdue':''}"><i data-lucide="calendar-days"></i>${overdue?'Overdue · ':''}${formatDate(task.due_date+'T00:00:00')}</span>`:''}<span class="priority-pill priority-${task.priority}">${escapeHtml(task.priority)}</span></div></div><div class="row-actions"><button class="row-action" data-action="edit-task" data-id="${task.id}" aria-label="Edit task"><i data-lucide="pencil"></i></button><button class="row-action" data-action="delete-task" data-id="${task.id}" aria-label="Delete task"><i data-lucide="trash-2"></i></button></div></article>`;
   }
 
   function renderInquiries() {
@@ -193,7 +237,7 @@
         const { error: itemError } = await db.from('inquiry_items').insert({ inquiry_id: inquiry.id, product_name: productName, quantity: numberOrNull(fd.get('quantity')), quantity_unit: clean(fd.get('quantity_unit')) || 'pcs', details: clean(fd.get('product_details')) });
         if (itemError) throw itemError;
       }
-      el('inquiryFormDialog').close(); toast(`${formatInquiryNo(inquiry.inquiry_no)} created`); await loadInquiries();
+      el('inquiryFormDialog').close(); toast(`${formatInquiryNo(inquiry.inquiry_no)} created with automatic tasks`); await Promise.all([loadInquiries(), loadTasks()]);
     } catch (error) { toast(friendlyError(error), 'error'); }
     finally { button.disabled = false; }
   }
@@ -219,9 +263,10 @@
     const assigned = state.profiles.find(p => p.id === i.assigned_to);
     el('inquiryDetailContent').innerHTML = `<div class="detail-wrap">
       <div class="detail-hero"><div class="detail-hero-top"><span class="card-number">${formatInquiryNo(i.inquiry_no)} · Added ${formatDate(i.created_at)}</span><button class="icon-btn" data-dialog-close="inquiryDetailDialog" aria-label="Close"><i data-lucide="x"></i></button></div><div class="detail-title-row"><div><h2>${escapeHtml(i.person_name)}</h2><p>${escapeHtml(i.company_name || 'Individual customer')}</p></div><div class="tag-row"><span class="status-pill status-${i.status}">${statusLabels[i.status]}</span><span class="priority-pill priority-${i.priority}">${escapeHtml(i.priority)}</span></div></div></div>
-      <nav class="detail-tabs" aria-label="Inquiry details"><button class="detail-tab ${activeTab==='overview'?'active':''}" data-detail-tab="overview">Overview</button><button class="detail-tab ${activeTab==='products'?'active':''}" data-detail-tab="products">Products (${(i.inquiry_items||[]).length})</button><button class="detail-tab ${activeTab==='files'?'active':''}" data-detail-tab="files">Attachments (${(i.inquiry_files||[]).length})</button><button class="detail-tab ${activeTab==='comments'?'active':''}" data-detail-tab="comments">Comments (${(i.inquiry_comments||[]).length})</button></nav>
+      <nav class="detail-tabs" aria-label="Inquiry details"><button class="detail-tab ${activeTab==='overview'?'active':''}" data-detail-tab="overview">Overview</button><button class="detail-tab ${activeTab==='tasks'?'active':''}" data-detail-tab="tasks">Tasks (${tasksForInquiry(i.id).length})</button><button class="detail-tab ${activeTab==='products'?'active':''}" data-detail-tab="products">Products (${(i.inquiry_items||[]).length})</button><button class="detail-tab ${activeTab==='files'?'active':''}" data-detail-tab="files">Attachments (${(i.inquiry_files||[]).length})</button><button class="detail-tab ${activeTab==='comments'?'active':''}" data-detail-tab="comments">Comments (${(i.inquiry_comments||[]).length})</button></nav>
       <div class="detail-scroll">
         <section class="detail-panel ${activeTab==='overview'?'active':''}" data-panel="overview">${overviewMarkup(i,assigned)}</section>
+        <section class="detail-panel ${activeTab==='tasks'?'active':''}" data-panel="tasks">${inquiryTasksMarkup(i)}</section>
         <section class="detail-panel ${activeTab==='products'?'active':''}" data-panel="products">${productsMarkup(i)}</section>
         <section class="detail-panel ${activeTab==='files'?'active':''}" data-panel="files">${filesMarkup(i)}</section>
         <section class="detail-panel ${activeTab==='comments'?'active':''}" data-panel="comments">${commentsMarkup(i)}</section>
@@ -246,6 +291,13 @@
   function productsMarkup(i) {
     const products = [...(i.inquiry_items||[])].sort((a,b)=>a.sort_order-b.sort_order);
     return `<article class="detail-section full"><div class="detail-section-head"><div><i data-lucide="package-open"></i><h3>Products requested</h3></div><button class="btn soft small" data-action="add-product"><i data-lucide="plus"></i>Add product</button></div><div class="products-list">${products.length ? products.map(p => `<div class="product-row"><span class="product-icon"><i data-lucide="package"></i></span><div><strong>${escapeHtml(p.product_name)}</strong><p>${formatQuantity(p.quantity)} ${escapeHtml(p.quantity_unit||'')} ${p.details?`· ${escapeHtml(p.details)}`:''}</p></div><div class="row-actions"><button class="row-action" data-action="edit-product" data-id="${p.id}" aria-label="Edit product"><i data-lucide="pencil"></i></button><button class="row-action" data-action="delete-product" data-id="${p.id}" aria-label="Delete product"><i data-lucide="trash-2"></i></button></div></div>`).join('') : '<div class="empty-inline">No products added yet.</div>'}</div></article>`;
+  }
+
+  function tasksForInquiry(inquiryId) { return state.tasks.filter(task => task.inquiry_id === inquiryId); }
+
+  function inquiryTasksMarkup(inquiry) {
+    const tasks = tasksForInquiry(inquiry.id).sort((a,b) => (a.status === 'done') - (b.status === 'done') || taskDueSort(a,b) || a.sort_order-b.sort_order);
+    return `<article class="detail-section full"><div class="detail-section-head"><div><i data-lucide="list-checks"></i><h3>Order tasks</h3></div><button class="btn soft small" data-action="add-task" data-id="${inquiry.id}"><i data-lucide="plus"></i>Add task</button></div><div class="inquiry-task-list">${tasks.length ? tasks.map(task => taskCardMarkup(task,true)).join('') : '<div class="empty-inline">No tasks added to this order yet.</div>'}</div></article>`;
   }
 
   function filesMarkup(i) {
@@ -280,6 +332,7 @@
   function handleDelegatedClick(event) {
     const close = event.target.closest('[data-close]'); if (close) return closePanels();
     const dialogClose = event.target.closest('[data-dialog-close]'); if (dialogClose) return el(dialogClose.dataset.dialogClose).close();
+    const workspaceView = event.target.closest('[data-workspace-view]'); if (workspaceView) return switchWorkspace(workspaceView.dataset.workspaceView);
     const tab = event.target.closest('[data-detail-tab]'); if (tab) return renderInquiryDetail(tab.dataset.detailTab);
     const action = event.target.closest('[data-action]');
     if (action) {
@@ -291,11 +344,25 @@
       if (type === 'add-product') return openProductForm();
       if (type === 'edit-product') return openProductForm((state.activeInquiry.inquiry_items||[]).find(p=>p.id===id));
       if (type === 'delete-product') return deleteProduct(id);
+      if (type === 'add-task') return openTaskForm(null, id);
+      if (type === 'add-task-global') return openTaskForm();
+      if (type === 'edit-task') return openTaskForm(state.tasks.find(task => task.id === id));
+      if (type === 'delete-task') return deleteTask(id);
+      if (type === 'toggle-task') return toggleTask(id);
+      if (type === 'view-task-inquiry') { el('taskDialog').open && el('taskDialog').close(); return openInquiryDetail(id); }
       if (type === 'preview-file') return openAttachmentPreview(id);
       if (type === 'download-file') return downloadFile(id);
       if (type === 'delete-file') return deleteFile(id);
     }
     const notification = event.target.closest('.notification-item'); if (notification) openNotification(notification.dataset.id, notification.dataset.inquiryId);
+  }
+
+  function switchWorkspace(view) {
+    state.currentView = view;
+    el('inquiryWorkspace').classList.toggle('hidden', view !== 'inquiries'); el('taskWorkspace').classList.toggle('hidden', view !== 'tasks');
+    $$('[data-workspace-view]').forEach(button => button.classList.toggle('active', button.dataset.workspaceView === view));
+    el('mobileAddBtn').setAttribute('aria-label', view === 'tasks' ? 'Add task' : 'Add inquiry');
+    if (view === 'tasks') renderTasks();
   }
 
   document.addEventListener('change', event => {
@@ -346,6 +413,53 @@
     if (!confirm('Delete this product from the inquiry?')) return;
     const { error } = await db.from('inquiry_items').delete().eq('id', id); if (error) return toast(friendlyError(error),'error');
     toast('Product deleted'); await refreshActiveInquiry('products');
+  }
+
+  function openTaskForm(task = null, inquiryId = null) {
+    state.taskEdit = task || null; const form = el('taskForm'), field = name => form.elements.namedItem(name); form.reset();
+    el('taskFormTitle').textContent = task ? 'Edit task' : 'Add task';
+    field('inquiry_id').innerHTML = state.inquiries.map(i => `<option value="${i.id}">${formatInquiryNo(i.inquiry_no)} · ${escapeHtml(i.person_name)}${i.company_name?` · ${escapeHtml(i.company_name)}`:''}</option>`).join('');
+    field('assigned_to').innerHTML = '<option value="">Unassigned</option>' + state.profiles.map(p => `<option value="${p.id}">${escapeHtml(p.full_name || p.email)}</option>`).join('');
+    const selectedInquiry = task?.inquiry_id || inquiryId || state.activeInquiry?.id || state.inquiries[0]?.id;
+    if (!selectedInquiry) return toast('Create an inquiry before adding tasks.', 'error');
+    field('inquiry_id').value = selectedInquiry;
+    if (task) {
+      field('title').value = task.title; field('description').value = task.description || ''; field('assigned_to').value = task.assigned_to || '';
+      field('status').value = task.status; field('priority').value = task.priority; field('due_date').value = task.due_date || '';
+    } else {
+      const inquiry = state.inquiries.find(i => i.id === selectedInquiry);
+      field('status').value = 'todo'; field('priority').value = 'normal'; field('assigned_to').value = inquiry?.assigned_to || state.user.id;
+    }
+    el('taskDialog').showModal(); setTimeout(() => field('title').focus(), 50);
+  }
+
+  async function saveTask(event) {
+    event.preventDefault(); const form = event.currentTarget, fd = new FormData(form), button = el('saveTaskBtn'); button.disabled = true;
+    const payload = { inquiry_id: fd.get('inquiry_id'), title: clean(fd.get('title')), description: clean(fd.get('description')), assigned_to: fd.get('assigned_to') || null, status: fd.get('status'), priority: fd.get('priority'), due_date: fd.get('due_date') || null };
+    try {
+      let result;
+      if (state.taskEdit) result = await db.from('tasks').update(payload).eq('id', state.taskEdit.id);
+      else result = await db.from('tasks').insert({ ...payload, created_by: state.user.id });
+      if (result.error) throw result.error;
+      const inquiryId = payload.inquiry_id; el('taskDialog').close(); toast(state.taskEdit ? 'Task updated' : 'Task added'); await loadTasks();
+      if (state.activeInquiry?.id === inquiryId && el('inquiryDetailDialog').open) renderInquiryDetail('tasks');
+    } catch (error) { toast(friendlyError(error), 'error'); }
+    finally { button.disabled = false; }
+  }
+
+  async function toggleTask(id) {
+    const task = state.tasks.find(item => item.id === id); if (!task) return;
+    const status = task.status === 'done' ? 'todo' : 'done';
+    const { error } = await db.from('tasks').update({ status }).eq('id', id); if (error) return toast(friendlyError(error), 'error');
+    toast(status === 'done' ? 'Task completed' : 'Task reopened'); await loadTasks();
+    if (state.activeInquiry?.id === task.inquiry_id && el('inquiryDetailDialog').open) renderInquiryDetail('tasks');
+  }
+
+  async function deleteTask(id) {
+    const task = state.tasks.find(item => item.id === id); if (!task || !confirm(`Delete task “${task.title}”?`)) return;
+    const { error } = await db.from('tasks').delete().eq('id', id); if (error) return toast(friendlyError(error), 'error');
+    toast('Task deleted'); await loadTasks();
+    if (state.activeInquiry?.id === task.inquiry_id && el('inquiryDetailDialog').open) renderInquiryDetail('tasks');
   }
 
   async function uploadFiles(fileList, kind, input) {
@@ -511,6 +625,7 @@
   function formatInquiryNo(n){return `INQ-${String(n).padStart(4,'0')}`}
   function formatQuantity(v){return v==null?'Quantity not set':Number(v).toLocaleString(undefined,{maximumFractionDigits:3})}
   function formatMoney(v,c){return v==null?'Not added':`${c||''} ${Number(v).toLocaleString(undefined,{minimumFractionDigits:2,maximumFractionDigits:2})}`.trim()}
+  function taskStatusLabel(v){return({todo:'To do',in_progress:'In progress',done:'Completed'})[v]||capitalize(v)}
   function formatBytes(v){const n=Number(v||0);if(n<1024)return`${n} B`;if(n<1048576)return`${(n/1024).toFixed(1)} KB`;return`${(n/1048576).toFixed(1)} MB`}
   function formatDate(v){return new Intl.DateTimeFormat(undefined,{day:'numeric',month:'short',year:'numeric'}).format(new Date(v))}
   function formatDateTime(v){return new Intl.DateTimeFormat(undefined,{day:'numeric',month:'short',hour:'numeric',minute:'2-digit'}).format(new Date(v))}
