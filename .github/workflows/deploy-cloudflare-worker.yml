@@ -11,6 +11,7 @@ on:
 
 permissions:
   contents: read
+  statuses: write
 
 concurrency:
   group: cloudflare-attachment-worker-production
@@ -38,3 +39,32 @@ jobs:
           curl --fail --silent --show-error \
             --retry 5 --retry-delay 5 --retry-all-errors \
             https://scs-task-attachments.ezychinadirect.workers.dev/health
+
+      - name: Publish deployment result
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOYMENT_RESULT: ${{ job.status }}
+        run: |
+          if [ "$DEPLOYMENT_RESULT" = "success" ]; then
+            state="success"
+            description="Cloudflare Worker deployed and health check passed"
+          else
+            state="failure"
+            description="Cloudflare Worker deployment or health check failed"
+          fi
+
+          payload=$(jq -nc \
+            --arg state "$state" \
+            --arg description "$description" \
+            --arg target_url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            '{state: $state, context: "cloudflare-worker/deployment", description: $description, target_url: $target_url}')
+
+          curl --fail --silent --show-error \
+            --retry 3 --retry-all-errors \
+            --request POST \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/statuses/${GITHUB_SHA}" \
+            --data "$payload"
