@@ -270,7 +270,7 @@
     const thumbnail = canPreview
       ? `<button class="file-thumbnail ${isPdf?'pdf-thumbnail':''}" data-action="preview-file" data-id="${file.id}" aria-label="Preview ${escapeAttr(file.file_name)}"><span class="thumbnail-loading" data-file-preview="${file.id}" data-preview-kind="${isImage?'image':'pdf'}"><i data-lucide="${isImage?'image':'file-text'}"></i>${isPdf?'<b>PDF</b>':''}</span></button>`
       : `<span class="file-thumbnail static"><span><i data-lucide="file-text"></i></span></span>`;
-    return `<div class="file-row">${thumbnail}<div class="file-copy"><strong>${escapeHtml(file.file_name)}</strong><p>${escapeHtml(fileKindLabels[file.file_kind] || 'Other file')} · ${formatBytes(file.size_bytes)} · ${formatDate(file.created_at)}</p>${canPreview?`<button class="file-preview-link" data-action="preview-file" data-id="${file.id}">Tap to preview</button>`:''}</div><div class="row-actions"><button class="row-action" data-action="download-file" data-id="${file.id}" aria-label="Download"><i data-lucide="download"></i></button><button class="row-action" data-action="delete-file" data-id="${file.id}" aria-label="Delete"><i data-lucide="trash-2"></i></button></div></div>`;
+    return `<div class="file-tile">${thumbnail}<div class="file-tile-footer"><strong title="${escapeAttr(file.file_name)}">${escapeHtml(file.file_name)}</strong><div class="row-actions"><button class="row-action" data-action="download-file" data-id="${file.id}" aria-label="Download ${escapeAttr(file.file_name)}"><i data-lucide="download"></i></button><button class="row-action" data-action="delete-file" data-id="${file.id}" aria-label="Delete ${escapeAttr(file.file_name)}"><i data-lucide="trash-2"></i></button></div></div></div>`;
   }
 
   function commentsMarkup(i) {
