@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <meta name="theme-color" content="#5b5bd6">
+  <meta name="description" content="A mobile-friendly group task manager for teams, families and project groups.">
+  <title>Together Tasks</title>
+  <link rel="preconnect" href="https://cdn.jsdelivr.net">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <main id="auth-view" class="auth-page hidden">
+    <section class="auth-card">
+      <div class="logo-mark" aria-hidden="true">✓</div>
+      <p class="eyebrow">GROUP TASK MANAGER</p>
+      <h1>Plan together.<br><span>Finish together.</span></h1>
+      <p class="muted">One clear place for shared tasks, owners, deadlines and progress.</p>
+      <div class="segmented" aria-label="Authentication mode">
+        <button class="active" data-auth-tab="login">Sign in</button>
+        <button data-auth-tab="signup">Create account</button>
+      </div>
+      <form id="auth-form" class="stack">
+        <label id="name-field" class="field hidden"><span>Full name</span><input id="auth-name" autocomplete="name" placeholder="Your name"></label>
+        <label class="field"><span>Email</span><input id="auth-email" type="email" autocomplete="email" required placeholder="you@example.com"></label>
+        <label class="field"><span>Password</span><input id="auth-password" type="password" minlength="8" autocomplete="current-password" required placeholder="At least 8 characters"></label>
+        <button class="button primary full" type="submit" id="auth-submit">Sign in</button>
+      </form>
+      <button id="demo-button" class="button quiet full" type="button">Preview with demo data</button>
+      <p class="tiny">Demo data stays in this browser. Connect Supabase for real team accounts and syncing.</p>
+    </section>
+  </main>
+
+  <div id="app-view" class="app hidden">
+    <aside class="sidebar">
+      <div class="brand"><span class="logo-mark small">✓</span><strong>Together</strong></div>
+      <nav class="nav-list" aria-label="Main navigation">
+        <button class="active" data-view="dashboard"><span>⌂</span> Overview</button>
+        <button data-view="tasks"><span>✓</span> Tasks</button>
+        <button data-view="team"><span>♙</span> Team</button>
+        <button data-view="settings"><span>⚙</span> Settings</button>
+      </nav>
+      <div class="sidebar-foot"><div id="user-avatar" class="avatar">A</div><div><strong id="user-name">User</strong><small id="user-email"></small></div></div>
+    </aside>
+
+    <section class="workspace">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow" id="page-kicker">WORKSPACE</p>
+          <h2 id="page-title">Overview</h2>
+        </div>
+        <div class="top-actions">
+          <label class="group-picker"><span class="sr-only">Current group</span><select id="group-select"></select></label>
+          <button class="icon-button" id="open-group" title="Create or join a group">＋</button>
+          <button class="button primary compact" id="open-task">＋ Add task</button>
+        </div>
+      </header>
+
+      <div class="content">
+        <section id="dashboard-screen" class="screen">
+          <div class="welcome-card">
+            <div><p class="eyebrow">TODAY</p><h3 id="greeting">Let’s make progress.</h3><p id="welcome-copy" class="muted">Your team’s shared work at a glance.</p></div>
+            <div class="progress-ring" id="progress-ring"><strong id="progress-percent">0%</strong><span>done</span></div>
+          </div>
+          <div class="stats-grid">
+            <article class="stat-card lavender"><span>OPEN</span><strong id="stat-open">0</strong><small>tasks to complete</small></article>
+            <article class="stat-card peach"><span>DUE SOON</span><strong id="stat-due">0</strong><small>within 3 days</small></article>
+            <article class="stat-card green"><span>COMPLETED</span><strong id="stat-done">0</strong><small>all-time tasks</small></article>
+          </div>
+          <div class="section-head"><div><p class="eyebrow">UP NEXT</p><h3>Priority tasks</h3></div><button class="text-button" data-jump="tasks">View all →</button></div>
+          <div id="priority-list" class="task-grid"></div>
+        </section>
+
+        <section id="tasks-screen" class="screen hidden">
+          <div class="toolbar">
+            <label class="search"><span>⌕</span><input id="task-search" placeholder="Search tasks"></label>
+            <select id="status-filter" aria-label="Filter by status"><option value="all">All statuses</option><option value="todo">To do</option><option value="in_progress">In progress</option><option value="done">Done</option></select>
+            <select id="priority-filter" aria-label="Filter by priority"><option value="all">All priorities</option><option value="high">High</option><option value="medium">Medium</option><option value="low">Low</option></select>
+          </div>
+          <div id="task-list" class="task-grid"></div>
+        </section>
+
+        <section id="team-screen" class="screen hidden">
+          <div class="invite-card"><div><p class="eyebrow">INVITE YOUR PEOPLE</p><h3>Share this group code</h3><p class="muted">A signed-in user can join this group using the code below.</p></div><div class="invite-code"><strong id="invite-code">—</strong><button id="copy-code">Copy</button></div></div>
+          <div class="section-head"><div><p class="eyebrow">MEMBERS</p><h3>Your team</h3></div><span id="member-count" class="pill">0 people</span></div>
+          <div id="member-list" class="member-grid"></div>
+        </section>
+
+        <section id="settings-screen" class="screen hidden">
+          <div class="settings-grid">
+            <article class="panel"><p class="eyebrow">CURRENT GROUP</p><h3 id="settings-group-name">—</h3><p id="settings-group-description" class="muted">—</p><button class="button quiet" id="settings-group-action">Create or join another group</button></article>
+            <article class="panel"><p class="eyebrow">ACCOUNT</p><h3 id="settings-user-name">—</h3><p id="settings-user-email" class="muted">—</p><button class="button danger" id="sign-out">Sign out</button></article>
+          </div>
+        </section>
+      </div>
+    </section>
+
+    <nav class="bottom-nav" aria-label="Mobile navigation">
+      <button class="active" data-view="dashboard"><span>⌂</span><small>Overview</small></button>
+      <button data-view="tasks"><span>✓</span><small>Tasks</small></button>
+      <button class="add-mobile" id="open-task-mobile"><span>＋</span><small>Add</small></button>
+      <button data-view="team"><span>♙</span><small>Team</small></button>
+      <button data-view="settings"><span>⚙</span><small>Settings</small></button>
+    </nav>
+  </div>
+
+  <dialog id="task-dialog">
+    <form id="task-form" method="dialog" class="modal-card">
+      <div class="modal-head"><div><p class="eyebrow">TASK DETAILS</p><h3 id="task-modal-title">Add a task</h3></div><button class="close-button" type="button" data-close="task-dialog">×</button></div>
+      <input id="task-id" type="hidden">
+      <label class="field"><span>Task title</span><input id="task-title" required maxlength="140" placeholder="What needs to be done?"></label>
+      <label class="field"><span>Description</span><textarea id="task-description" rows="3" maxlength="1000" placeholder="Add useful details (optional)"></textarea></label>
+      <div class="form-grid">
+        <label class="field"><span>Status</span><select id="task-status"><option value="todo">To do</option><option value="in_progress">In progress</option><option value="done">Done</option></select></label>
+        <label class="field"><span>Priority</span><select id="task-priority"><option value="medium">Medium</option><option value="high">High</option><option value="low">Low</option></select></label>
+        <label class="field"><span>Due date</span><input id="task-due" type="date"></label>
+        <label class="field"><span>Assign to</span><select id="task-assignee"><option value="">Unassigned</option></select></label>
+      </div>
+      <div class="modal-actions"><button class="button quiet" type="button" data-close="task-dialog">Cancel</button><button class="button primary" type="submit">Save task</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="group-dialog">
+    <section class="modal-card">
+      <div class="modal-head"><div><p class="eyebrow">WORK TOGETHER</p><h3>Create or join a group</h3></div><button class="close-button" type="button" data-close="group-dialog">×</button></div>
+      <div class="segmented"><button class="active" data-group-tab="create">Create group</button><button data-group-tab="join">Join with code</button></div>
+      <form id="create-group-form" class="stack">
+        <label class="field"><span>Group name</span><input id="group-name" required maxlength="80" placeholder="e.g. Marketing Team"></label>
+        <label class="field"><span>Description</span><textarea id="group-description" rows="3" maxlength="300" placeholder="What is this group working on?"></textarea></label>
+        <button class="button primary full" type="submit">Create group</button>
+      </form>
+      <form id="join-group-form" class="stack hidden">
+        <label class="field"><span>6-character invite code</span><input id="join-code" required minlength="6" maxlength="6" autocapitalize="characters" placeholder="ABC123"></label>
+        <button class="button primary full" type="submit">Join group</button>
+      </form>
+    </section>
+  </dialog>
+
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.112.3/dist/umd/supabase.min.js"></script>
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
