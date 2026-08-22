@@ -249,9 +249,18 @@
   }
 
   function filesMarkup(i) {
-    return `<article class="detail-section full"><div class="detail-section-head"><div><i data-lucide="paperclip"></i><h3>Inquiry attachments</h3></div></div>
-      <div class="file-upload-grid">${Object.entries(fileKindLabels).slice(0,4).map(([kind,label]) => `<label class="upload-tile"><i data-lucide="upload-cloud"></i><span>${label}</span><input type="file" data-upload-kind="${kind}" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx" multiple></label>`).join('')}</div>
-      <div class="files-list">${(i.inquiry_files||[]).length ? i.inquiry_files.map(fileMarkup).join('') : '<div class="empty-inline">No attachments uploaded yet.</div>'}</div></article>`;
+    const categories = [
+      ['client_photo', 'Client photos', 'image'],
+      ['shared_photo', 'Photos shared to client', 'send'],
+      ['quote', 'Quote', 'file-text'],
+      ['payment_proof', 'Payment proof', 'receipt-text']
+    ];
+    return `<div class="attachment-windows">${categories.map(([kind,label,icon]) => attachmentWindowMarkup(i, kind, label, icon)).join('')}</div>`;
+  }
+
+  function attachmentWindowMarkup(inquiry, kind, label, icon) {
+    const files = (inquiry.inquiry_files || []).filter(file => file.file_kind === kind);
+    return `<article class="attachment-window"><div class="attachment-window-head"><div class="attachment-window-title"><span><i data-lucide="${icon}"></i></span><div><h3>${escapeHtml(label)}</h3><p>${files.length} file${files.length===1?'':'s'}</p></div></div><label class="attachment-add-btn"><i data-lucide="plus"></i><span>Add</span><input type="file" data-upload-kind="${kind}" accept="image/*,.pdf,.doc,.docx,.xls,.xlsx" multiple></label></div><div class="attachment-window-list">${files.length ? files.map(fileMarkup).join('') : `<div class="attachment-window-empty"><i data-lucide="upload-cloud"></i><strong>No ${escapeHtml(label.toLowerCase())} yet</strong><span>Use Add to upload files</span></div>`}</div></article>`;
   }
 
   function fileMarkup(file) {
