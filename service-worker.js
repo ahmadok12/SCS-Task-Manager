@@ -1,4 +1,4 @@
-const CACHE = 'scs-inquiry-v8';
+const CACHE = 'scs-inquiry-v9';
 const APP_SHELL = ['./', './index.html', './styles.css', './app.js', './config.js', './manifest.webmanifest', './assets/icon.svg', './assets/icon-192.png', './assets/icon-512.png'];
 
 self.addEventListener('install', event => {
@@ -20,5 +20,21 @@ self.addEventListener('fetch', event => {
 
 self.addEventListener('notificationclick', event => {
   event.notification.close();
-  event.waitUntil(clients.matchAll({ type: 'window', includeUncontrolled: true }).then(list => list[0] ? list[0].focus() : clients.openWindow('./')));
+  const target = event.notification.data?.url || './';
+  event.waitUntil(clients.matchAll({ type: 'window', includeUncontrolled: true }).then(async list => {
+    for (const client of list) {
+      if ('navigate' in client) await client.navigate(target);
+      return client.focus();
+    }
+    return clients.openWindow(target);
+  }));
+});
+
+self.addEventListener('push', event => {
+  let data = {};
+  try { data = event.data?.json() || {}; } catch { data = { title: 'SCS Workspace', body: event.data?.text() || 'New update' }; }
+  event.waitUntil(self.registration.showNotification(data.title || 'SCS Workspace', {
+    body: data.body || 'New team update', icon: data.icon || './assets/icon-192.png', badge: data.badge || './assets/icon-192.png',
+    tag: data.tag || 'scs-update', data: { url: data.url || './', inquiryId: data.inquiryId || null }
+  }));
 });
