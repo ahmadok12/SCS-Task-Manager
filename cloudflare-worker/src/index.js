@@ -3,7 +3,7 @@ const ALLOWED_TYPES = new Set([
   'application/msword', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
   'application/vnd.ms-excel', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
 ]);
-const FILE_KINDS = new Set(['client_photo', 'shared_photo', 'quote', 'payment_proof', 'other']);
+const FILE_KINDS = new Set(['client_photo', 'shared_photo', 'quote', 'payment_proof', 'product_photo', 'other']);
 
 export default {
   async fetch(request, env) {
@@ -40,24 +40,42 @@ async function uploadFile(request, env, token, userId, inquiryId, cors) {
   const form = await request.formData();
   const file = form.get('file');
   const fileKind = String(form.get('file_kind') || 'other');
+  const productId = String(form.get('product_id') || '');
   if (!(file instanceof File)) throw httpError(400, 'A file is required');
   if (!FILE_KINDS.has(fileKind)) throw httpError(400, 'Invalid attachment category');
   const max = Number(env.MAX_FILE_SIZE || 26214400);
   if (!file.size || file.size > max) throw httpError(413, 'File must be between 1 byte and 25 MB');
   if (!ALLOWED_TYPES.has(file.type)) throw httpError(415, 'This file type is not allowed');
+  if (fileKind === 'product_photo') {
+    if (!/^image\/(jpeg|png|webp|gif)$/.test(file.type)) throw httpError(415, 'Product photo must be an image');
+    if (!/^[0-9a-f-]{36}$/i.test(productId)) throw httpError(400, 'A valid product is required');
+    await assertProductAccess(env, token, inquiryId, productId);
+  } else if (productId) throw httpError(400, 'Product can only be linked to a product photo');
 
   const cleanName = sanitizeName(file.name);
   const objectKey = `inquiries/${inquiryId}/${crypto.randomUUID()}/${cleanName}`;
   await env.ATTACHMENTS.put(objectKey, file.stream(), {
     httpMetadata: { contentType: file.type },
-    customMetadata: { inquiryId, uploaderId: userId, fileKind, originalName: cleanName }
+    customMetadata: { inquiryId, uploaderId: userId, fileKind, productId, originalName: cleanName }
   });
 
-  const result = await supabase(env, token, '/rest/v1/inquiry_files', {
-    method: 'POST', headers: { 'Content-Type': 'application/json', Prefer: 'return=representation' },
-    body: JSON.stringify({ inquiry_id: inquiryId, file_kind: fileKind, file_name: cleanName, object_key: objectKey, mime_type: file.type, size_bytes: file.size, uploaded_by: userId })
+  const payload = { inquiry_id: inquiryId, product_id: productId || null, file_kind: fileKind, file_name: cleanName, object_key: objectKey, mime_type: file.type, size_bytes: file.size, uploaded_by: userId };
+  let oldObjectKey = null;
+  let result;
+  if (fileKind === 'product_photo') {
+    const existingResponse = await supabase(env, token, `/rest/v1/inquiry_files?select=id,object_key&product_id=eq.${productId}&file_kind=eq.product_photo&limit=1`);
+    if (!existingResponse.ok) { await env.ATTACHMENTS.delete(objectKey); throw httpError(existingResponse.status, await apiError(existingResponse)); }
+    const existing = (await existingResponse.json())[0];
+    if (existing) {
+      oldObjectKey = existing.object_key;
+      result = await supabase(env, token, `/rest/v1/inquiry_files?id=eq.${existing.id}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json', Prefer: 'return=representation' }, body: JSON.stringify(payload) });
+    }
+  }
+  if (!result) result = await supabase(env, token, '/rest/v1/inquiry_files', {
+    method: 'POST', headers: { 'Content-Type': 'application/json', Prefer: 'return=representation' }, body: JSON.stringify(payload)
   });
   if (!result.ok) { await env.ATTACHMENTS.delete(objectKey); throw httpError(result.status, await apiError(result)); }
+  if (oldObjectKey && oldObjectKey !== objectKey) await env.ATTACHMENTS.delete(oldObjectKey);
   return json({ file: (await result.json())[0] }, 201, cors);
 }
 
@@ -93,6 +111,12 @@ async function assertInquiryAccess(env, token, inquiryId) {
   const result = await supabase(env, token, `/rest/v1/inquiries?select=id&id=eq.${inquiryId}&limit=1`);
   if (!result.ok) throw httpError(result.status, await apiError(result));
   if (!(await result.json()).length) throw httpError(403, 'You do not have access to this inquiry');
+}
+
+async function assertProductAccess(env, token, inquiryId, productId) {
+  const result = await supabase(env, token, `/rest/v1/inquiry_items?select=id&id=eq.${productId}&inquiry_id=eq.${inquiryId}&limit=1`);
+  if (!result.ok) throw httpError(result.status, await apiError(result));
+  if (!(await result.json()).length) throw httpError(403, 'Product does not belong to this inquiry');
 }
 
 async function authenticatedUser(env, token) {
