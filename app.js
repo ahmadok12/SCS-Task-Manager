@@ -9,7 +9,7 @@
   const state = {
     user: null, profile: null, profiles: [], inquiries: [], tasks: [], notifications: [],
     activeInquiry: null, authMode: 'signin', deferredInstall: null,
-    realtimeChannel: null, fieldEdit: null, productEdit: null, taskEdit: null, currentView: 'inquiries',
+    realtimeChannel: null, fieldEdit: null, productEdit: null, taskEdit: null, currentView: 'inquiries', pushEnabled: false,
     attachmentPreviewUrls: new Map(), attachmentPreviewRequest: 0, openPreviewFileId: null, localProductPhotoUrl: null, inquiryProductPhotoUrl: null, activeLocalPhotoUrl: null
   };
 
@@ -112,6 +112,9 @@
       await loadProfiles();
       await Promise.all([loadInquiries(), loadTasks(), loadNotifications()]);
       subscribeRealtime();
+      refreshPushState();
+      const launchInquiry = new URL(location.href).searchParams.get('inquiry');
+      if (launchInquiry) { history.replaceState({},'',location.pathname); await openInquiryDetail(launchInquiry); }
     } catch (error) { toast(friendlyError(error), 'error'); }
   }
 
@@ -244,6 +247,7 @@
           catch (photoError) { toast(`Inquiry saved, but photo failed: ${friendlyError(photoError)}`, 'error'); }
         }
       }
+      await dispatchPush('new_inquiry', inquiry.id);
       el('inquiryFormDialog').close(); toast(`${formatInquiryNo(inquiry.inquiry_no)} created with automatic tasks`); await Promise.all([loadInquiries(), loadTasks()]);
     } catch (error) { toast(friendlyError(error), 'error'); }
     finally { button.disabled = false; }
@@ -251,13 +255,14 @@
 
   async function openInquiryDetail(id, editHint = false) {
     try {
-      const [inquiryRes, fileRes, commentRes] = await Promise.all([
+      const [inquiryRes, fileRes, commentRes, activityRes] = await Promise.all([
         db.from('inquiries').select('*, inquiry_items(*)').eq('id', id).single(),
         db.from('inquiry_files').select('*').eq('inquiry_id', id).order('created_at', { ascending: false }),
-        db.from('inquiry_comments').select('*, author:profiles!inquiry_comments_author_id_fkey(full_name,email)').eq('inquiry_id', id).order('created_at')
+        db.from('inquiry_comments').select('*, author:profiles!inquiry_comments_author_id_fkey(full_name,email)').eq('inquiry_id', id).order('created_at'),
+        db.from('activity_events').select('*, actor:profiles!activity_events_actor_id_fkey(full_name,email)').eq('inquiry_id', id).order('created_at', { ascending: false })
       ]);
-      if (inquiryRes.error) throw inquiryRes.error; if (fileRes.error) throw fileRes.error; if (commentRes.error) throw commentRes.error;
-      state.activeInquiry = { ...inquiryRes.data, inquiry_files: fileRes.data || [], inquiry_comments: commentRes.data || [] };
+      if (inquiryRes.error) throw inquiryRes.error; if (fileRes.error) throw fileRes.error; if (commentRes.error) throw commentRes.error; if (activityRes.error) throw activityRes.error;
+      state.activeInquiry = { ...inquiryRes.data, inquiry_files: fileRes.data || [], inquiry_comments: commentRes.data || [], activity_events: activityRes.data || [] };
       renderInquiryDetail();
       const dialog = el('inquiryDetailDialog'); if (!dialog.open) dialog.showModal();
       if (editHint) toast('Tap any pencil icon to edit that detail.');
@@ -270,9 +275,10 @@
     const assigned = state.profiles.find(p => p.id === i.assigned_to);
     el('inquiryDetailContent').innerHTML = `<div class="detail-wrap">
       <div class="detail-hero"><div class="detail-hero-top"><span class="card-number">${formatInquiryNo(i.inquiry_no)} · Added ${formatDate(i.created_at)}</span><button class="icon-btn" data-dialog-close="inquiryDetailDialog" aria-label="Close"><i data-lucide="x"></i></button></div><div class="detail-title-row"><div><h2>${escapeHtml(i.person_name)}</h2><p>${escapeHtml(i.company_name || 'Individual customer')}</p></div><div class="tag-row"><span class="status-pill status-${i.status}">${statusLabels[i.status]}</span><span class="priority-pill priority-${i.priority}">${escapeHtml(i.priority)}</span></div></div></div>
-      <nav class="detail-tabs" aria-label="Inquiry details"><button class="detail-tab ${activeTab==='overview'?'active':''}" data-detail-tab="overview">Overview</button><button class="detail-tab ${activeTab==='tasks'?'active':''}" data-detail-tab="tasks">Tasks (${tasksForInquiry(i.id).length})</button><button class="detail-tab ${activeTab==='products'?'active':''}" data-detail-tab="products">Products (${(i.inquiry_items||[]).length})</button><button class="detail-tab ${activeTab==='files'?'active':''}" data-detail-tab="files">Attachments (${(i.inquiry_files||[]).length})</button><button class="detail-tab ${activeTab==='comments'?'active':''}" data-detail-tab="comments">Comments (${(i.inquiry_comments||[]).length})</button></nav>
+      <nav class="detail-tabs" aria-label="Inquiry details"><button class="detail-tab ${activeTab==='overview'?'active':''}" data-detail-tab="overview">Overview</button><button class="detail-tab ${activeTab==='timeline'?'active':''}" data-detail-tab="timeline">Timeline (${(i.activity_events||[]).length})</button><button class="detail-tab ${activeTab==='tasks'?'active':''}" data-detail-tab="tasks">Tasks (${tasksForInquiry(i.id).length})</button><button class="detail-tab ${activeTab==='products'?'active':''}" data-detail-tab="products">Products (${(i.inquiry_items||[]).length})</button><button class="detail-tab ${activeTab==='files'?'active':''}" data-detail-tab="files">Attachments (${(i.inquiry_files||[]).length})</button><button class="detail-tab ${activeTab==='comments'?'active':''}" data-detail-tab="comments">Comments (${(i.inquiry_comments||[]).length})</button></nav>
       <div class="detail-scroll">
         <section class="detail-panel ${activeTab==='overview'?'active':''}" data-panel="overview">${overviewMarkup(i,assigned)}</section>
+        <section class="detail-panel ${activeTab==='timeline'?'active':''}" data-panel="timeline">${timelineMarkup(i)}</section>
         <section class="detail-panel ${activeTab==='tasks'?'active':''}" data-panel="tasks">${inquiryTasksMarkup(i)}</section>
         <section class="detail-panel ${activeTab==='products'?'active':''}" data-panel="products">${productsMarkup(i)}</section>
         <section class="detail-panel ${activeTab==='files'?'active':''}" data-panel="files">${filesMarkup(i)}</section>
@@ -289,6 +295,17 @@
       ${detailSection('badge-dollar-sign','Quote & payment', [['quote_amount',formatMoney(i.quote_amount,i.quote_currency),i.quote_amount],['quote_currency',i.quote_currency],['quote_notes',i.quote_notes],['payment_notes',i.payment_notes]], true)}
       ${detailSection('sliders-horizontal','Management', [['status',statusLabels[i.status],i.status],['priority',capitalize(i.priority),i.priority],['source',i.source],['assigned_to',assigned?.full_name||assigned?.email||'Unassigned',i.assigned_to]], true)}
     </div>`;
+  }
+
+  function timelineMarkup(inquiry) {
+    const events = inquiry.activity_events || [];
+    return `<article class="detail-section full"><div class="detail-section-head"><div><i data-lucide="history"></i><h3>Complete activity timeline</h3></div></div><div class="activity-timeline">${events.length ? events.map(activityEventMarkup).join('') : '<div class="empty-inline">No activity recorded yet.</div>'}</div></article>`;
+  }
+
+  function activityEventMarkup(event) {
+    const actor = event.actor?.full_name || event.actor?.email || 'System';
+    const icon = event.event_type.startsWith('task_') ? 'list-checks' : event.event_type.startsWith('comment_') ? 'message-square' : event.event_type.startsWith('file_') ? 'paperclip' : event.event_type.startsWith('product_') ? 'package' : event.event_type === 'inquiry_created' ? 'sparkles' : 'pencil';
+    return `<div class="activity-event"><span class="activity-icon"><i data-lucide="${icon}"></i></span><div><div class="activity-event-head"><strong>${escapeHtml(event.title)}</strong><time>${formatDateTime(event.created_at)}</time></div>${event.details?`<p>${escapeHtml(event.details)}</p>`:''}<small>${escapeHtml(actor)}</small></div></div>`;
   }
 
   function detailSection(icon,title,rows) {
@@ -510,7 +527,11 @@
       if (state.taskEdit) result = await db.from('tasks').update(payload).eq('id', state.taskEdit.id);
       else result = await db.from('tasks').insert({ ...payload, created_by: state.user.id });
       if (result.error) throw result.error;
-      const inquiryId = payload.inquiry_id; el('taskDialog').close(); toast(state.taskEdit ? 'Task updated' : 'Task added'); await loadTasks();
+      const inquiryId = payload.inquiry_id;
+      const previous = state.taskEdit;
+      if (payload.assigned_to && (!previous || previous.assigned_to !== payload.assigned_to)) await dispatchPush('task_assigned', inquiryId);
+      if (payload.status === 'done' && previous?.status !== 'done') await dispatchPush('task_done', inquiryId);
+      el('taskDialog').close(); toast(state.taskEdit ? 'Task updated' : 'Task added'); await loadTasks();
       if (state.activeInquiry?.id === inquiryId && el('inquiryDetailDialog').open) renderInquiryDetail('tasks');
     } catch (error) { toast(friendlyError(error), 'error'); }
     finally { button.disabled = false; }
@@ -520,6 +541,7 @@
     const task = state.tasks.find(item => item.id === id); if (!task) return;
     const status = task.status === 'done' ? 'todo' : 'done';
     const { error } = await db.from('tasks').update({ status }).eq('id', id); if (error) return toast(friendlyError(error), 'error');
+    if (status === 'done') await dispatchPush('task_done', task.inquiry_id);
     toast(status === 'done' ? 'Task completed' : 'Task reopened'); await loadTasks();
     if (state.activeInquiry?.id === task.inquiry_id && el('inquiryDetailDialog').open) renderInquiryDetail('tasks');
   }
@@ -644,6 +666,7 @@
     const button=form.querySelector('button'); button.disabled=true;
     try {
       const { error }=await db.from('inquiry_comments').insert({ inquiry_id:state.activeInquiry.id, body, author_id:state.user.id }); if(error) throw error;
+      await dispatchPush('comment', state.activeInquiry.id);
       form.reset(); toast('Comment posted — team notified'); await refreshActiveInquiry('comments');
     } catch(error){toast(friendlyError(error),'error')} finally{button.disabled=false}
   }
@@ -665,7 +688,7 @@
   function subscribeRealtime() {
     if(state.realtimeChannel) db.removeChannel(state.realtimeChannel);
     state.realtimeChannel=db.channel(`notifications:${state.user.id}`).on('postgres_changes',{event:'INSERT',schema:'public',table:'notifications',filter:`recipient_id=eq.${state.user.id}`},payload=>{
-      state.notifications.unshift(payload.new); renderNotifications(); toast(payload.new.title); showSystemNotification(payload.new);
+      state.notifications.unshift(payload.new); renderNotifications(); toast(payload.new.title); if(!state.pushEnabled) showSystemNotification(payload.new);
     }).subscribe();
   }
 
@@ -674,7 +697,30 @@
     closePanels(); if(inquiryId) openInquiryDetail(inquiryId);
   }
   async function markAllRead(){const ids=state.notifications.filter(n=>!n.is_read).map(n=>n.id);if(!ids.length)return;const{error}=await db.from('notifications').update({is_read:true}).in('id',ids);if(error)return toast(friendlyError(error),'error');state.notifications.forEach(n=>n.is_read=true);renderNotifications()}
-  async function enableBrowserAlerts(){if(!('Notification'in window))return toast('Browser alerts are not supported here.','error');const p=await Notification.requestPermission();toast(p==='granted'?'Browser alerts enabled':'Notification permission was not enabled',p==='granted'?'':'error')}
+  async function enableBrowserAlerts(){
+    if(!('Notification'in window)||!('serviceWorker'in navigator)||!('PushManager'in window))return toast('Background push is not supported on this device.','error');
+    const button=el('enableAlertsBtn');button.disabled=true;
+    try{
+      const permission=await Notification.requestPermission();if(permission!=='granted')throw new Error('Notification permission was not enabled');
+      const {data:{session}}=await db.auth.getSession();if(!session)throw new Error('Please sign in again');
+      const response=await fetch(`${cfg.supabaseUrl}/functions/v1/send-push`,{headers:{Authorization:`Bearer ${session.access_token}`}});if(!response.ok)throw new Error('Push service could not be reached');
+      const {publicKey}=await response.json();if(!publicKey)throw new Error('Push service is not configured');
+      const registration=await navigator.serviceWorker.ready;
+      let subscription=await registration.pushManager.getSubscription();
+      if(!subscription)subscription=await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:urlBase64ToUint8Array(publicKey)});
+      const json=subscription.toJSON(),payload={user_id:state.user.id,endpoint:subscription.endpoint,p256dh:json.keys?.p256dh,auth:json.keys?.auth,user_agent:navigator.userAgent};
+      const {error}=await db.from('push_subscriptions').upsert(payload,{onConflict:'endpoint'});if(error)throw error;
+      state.pushEnabled=true;button.innerHTML='<i data-lucide="bell-check"></i>Background alerts enabled';window.lucide?.createIcons();toast('Background push notifications enabled');
+    }catch(error){toast(friendlyError(error),'error')}finally{button.disabled=false}
+  }
+  async function dispatchPush(kind,inquiryId){
+    try{
+      const {data:{session}}=await db.auth.getSession();if(!session)return;
+      const response=await fetch(`${cfg.supabaseUrl}/functions/v1/send-push`,{method:'POST',headers:{Authorization:`Bearer ${session.access_token}`,'Content-Type':'application/json'},body:JSON.stringify({kind,inquiry_id:inquiryId})});
+      if(!response.ok)console.warn('Push dispatch failed',response.status);
+    }catch(error){console.warn('Push dispatch failed',error)}
+  }
+  async function refreshPushState(){try{const registration=await navigator.serviceWorker?.ready;state.pushEnabled=!!(await registration?.pushManager?.getSubscription());if(state.pushEnabled){el('enableAlertsBtn').innerHTML='<i data-lucide="bell-check"></i>Background alerts enabled';window.lucide?.createIcons()}}catch{state.pushEnabled=false}}
   async function showSystemNotification(n){if(!('Notification'in window)||Notification.permission!=='granted')return;const reg=await navigator.serviceWorker?.ready.catch(()=>null);if(reg)reg.showNotification(n.title,{body:n.message,icon:'assets/icon-192.png',badge:'assets/icon-192.png',tag:n.id,data:{inquiryId:n.inquiry_id}});else new Notification(n.title,{body:n.message})}
 
   function openPanel(id){closePanels();el(id).classList.add('open');el(id).setAttribute('aria-hidden','false');el('scrim').classList.remove('hidden')}
@@ -691,6 +737,7 @@
   function showAuthError(message){el('authMessage').textContent=message}
   function friendlyError(error){const msg=error?.message||String(error||'Something went wrong');if(/invalid login/i.test(msg))return'Email or password is incorrect.';if(/fetch/i.test(msg))return'Could not connect. Check your internet connection.';return msg}
   function clean(v){return String(v??'').trim()}
+  function urlBase64ToUint8Array(value){const padding='='.repeat((4-value.length%4)%4),base64=(value+padding).replace(/-/g,'+').replace(/_/g,'/'),raw=atob(base64);return Uint8Array.from([...raw].map(char=>char.charCodeAt(0)))}
   function numberOrNull(v){return clean(v)===''?null:Number(v)}
   function initialsFor(v){const parts=clean(v).split(/\s+/).filter(Boolean);return((parts[0]?.[0]||'S')+(parts[1]?.[0]||parts[0]?.[1]||'C')).toUpperCase().slice(0,2)}
   function escapeHtml(v){return String(v??'').replace(/[&<>'"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;',"'":'&#39;','"':'&quot;'}[c]))}
