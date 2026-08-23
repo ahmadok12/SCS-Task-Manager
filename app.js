@@ -9,7 +9,7 @@
   const state = {
     user: null, profile: null, profiles: [], inquiries: [], tasks: [], notifications: [],
     activeInquiry: null, authMode: 'signin', deferredInstall: null,
-    realtimeChannel: null, fieldEdit: null, productEdit: null, taskEdit: null, currentView: 'inquiries', pushEnabled: false,
+    realtimeChannel: null, fieldEdit: null, productEdit: null, taskEdit: null, currentView: 'inquiries', pushEnabled: false, inquiryEditMode: false,
     attachmentPreviewUrls: new Map(), attachmentPreviewRequest: 0, openPreviewFileId: null, localProductPhotoUrl: null, inquiryProductPhotoUrl: null, activeLocalPhotoUrl: null
   };
 
@@ -65,7 +65,7 @@
     el('markAllReadBtn').addEventListener('click', markAllRead);
     el('enableAlertsBtn').addEventListener('click', enableBrowserAlerts);
     el('installBtn').addEventListener('click', installPwa);
-    el('inquiryDetailDialog').addEventListener('close', revokeAttachmentPreviews);
+    el('inquiryDetailDialog').addEventListener('close', () => { state.inquiryEditMode = false; revokeAttachmentPreviews(); });
     el('attachmentPreviewDialog').addEventListener('close', closeAttachmentPreview);
     el('productDialog').addEventListener('close', clearLocalProductPhoto);
     el('inquiryFormDialog').addEventListener('close', clearInquiryProductPhoto);
@@ -188,7 +188,8 @@
   function taskCardMarkup(task, compact = false) {
     const overdue = task.status !== 'done' && task.due_date && new Date(`${task.due_date}T23:59:59`) < new Date();
     const assignee = task.assignee || state.profiles.find(p => p.id === task.assigned_to);
-    return `<article class="task-card ${task.status==='done'?'completed':''} ${overdue?'overdue':''}"><button class="task-check" data-action="toggle-task" data-id="${task.id}" aria-label="${task.status==='done'?'Reopen':'Complete'} task"><i data-lucide="${task.status==='done'?'circle-check-big':'circle'}"></i></button><div class="task-card-copy"><div class="task-title-line"><strong>${escapeHtml(task.title)}</strong><span class="task-status status-${task.status}">${taskStatusLabel(task.status)}</span></div>${task.description?`<p>${escapeHtml(task.description)}</p>`:''}<div class="task-meta"><button data-action="view-task-inquiry" data-id="${task.inquiry_id}"><i data-lucide="package-search"></i>${formatInquiryNo(task.inquiry?.inquiry_no || state.activeInquiry?.inquiry_no)} · ${escapeHtml(task.inquiry?.person_name || state.activeInquiry?.person_name || 'Order')}</button><span><i data-lucide="user-round"></i>${escapeHtml(assignee?.full_name || assignee?.email || 'Unassigned')}</span>${task.due_date?`<span class="${overdue?'due-overdue':''}"><i data-lucide="calendar-days"></i>${overdue?'Overdue · ':''}${formatDate(task.due_date+'T00:00:00')}</span>`:''}<span class="priority-pill priority-${task.priority}">${escapeHtml(task.priority)}</span></div></div><div class="row-actions"><button class="row-action" data-action="edit-task" data-id="${task.id}" aria-label="Edit task"><i data-lucide="pencil"></i></button><button class="row-action" data-action="delete-task" data-id="${task.id}" aria-label="Delete task"><i data-lucide="trash-2"></i></button></div></article>`;
+    const actions = !compact || state.inquiryEditMode ? `<div class="row-actions"><button class="row-action" data-action="edit-task" data-id="${task.id}" aria-label="Edit task"><i data-lucide="pencil"></i></button><button class="row-action" data-action="delete-task" data-id="${task.id}" aria-label="Delete task"><i data-lucide="trash-2"></i></button></div>` : '';
+    return `<article class="task-card ${task.status==='done'?'completed':''} ${overdue?'overdue':''}"><button class="task-check" data-action="toggle-task" data-id="${task.id}" aria-label="${task.status==='done'?'Reopen':'Complete'} task"><i data-lucide="${task.status==='done'?'circle-check-big':'circle'}"></i></button><div class="task-card-copy"><div class="task-title-line"><strong>${escapeHtml(task.title)}</strong><span class="task-status status-${task.status}">${taskStatusLabel(task.status)}</span></div>${task.description?`<p>${escapeHtml(task.description)}</p>`:''}<div class="task-meta"><button data-action="view-task-inquiry" data-id="${task.inquiry_id}"><i data-lucide="package-search"></i>${formatInquiryNo(task.inquiry?.inquiry_no || state.activeInquiry?.inquiry_no)} · ${escapeHtml(task.inquiry?.person_name || state.activeInquiry?.person_name || 'Order')}</button><span><i data-lucide="user-round"></i>${escapeHtml(assignee?.full_name || assignee?.email || 'Unassigned')}</span>${task.due_date?`<span class="${overdue?'due-overdue':''}"><i data-lucide="calendar-days"></i>${overdue?'Overdue · ':''}${formatDate(task.due_date+'T00:00:00')}</span>`:''}<span class="priority-pill priority-${task.priority}">${escapeHtml(task.priority)}</span></div></div>${actions}</article>`;
   }
 
   function renderInquiries() {
@@ -215,7 +216,7 @@
       <div class="product-preview"><strong>${escapeHtml(product?.product_name || 'Product not added')}</strong><span>${product ? `${formatQuantity(product.quantity)} ${escapeHtml(product.quantity_unit || '')} · ${(i.inquiry_items || []).length} product${i.inquiry_items.length === 1 ? '' : 's'}` : 'Open inquiry to add product details'}</span></div>
       <div class="card-meta">${i.mobile ? `<span><i data-lucide="phone"></i>${escapeHtml(i.mobile)}</span>` : ''}<span><i data-lucide="clock-3"></i>${relativeTime(i.updated_at)}</span></div>
       <div class="tag-row"><span class="priority-pill priority-${i.priority}">${escapeHtml(i.priority)} priority</span>${assigned ? `<span class="priority-pill priority-normal">${escapeHtml(assigned.full_name || assigned.email)}</span>` : ''}</div>
-      <div class="card-actions"><button class="btn soft" data-action="view" data-id="${i.id}"><i data-lucide="eye"></i>View</button><button class="btn ghost" data-action="edit" data-id="${i.id}"><i data-lucide="pencil"></i>Edit</button></div>
+      <div class="card-actions"><button class="btn soft wide" data-action="view" data-id="${i.id}"><i data-lucide="eye"></i>View</button></div>
     </article>`;
   }
 
@@ -253,8 +254,10 @@
     finally { button.disabled = false; }
   }
 
-  async function openInquiryDetail(id, editHint = false) {
+  async function openInquiryDetail(id) {
     try {
+      const dialog = el('inquiryDetailDialog');
+      if (!dialog.open || state.activeInquiry?.id !== id) state.inquiryEditMode = false;
       const [inquiryRes, fileRes, commentRes, activityRes] = await Promise.all([
         db.from('inquiries').select('*, inquiry_items(*)').eq('id', id).single(),
         db.from('inquiry_files').select('*').eq('inquiry_id', id).order('created_at', { ascending: false }),
@@ -264,8 +267,7 @@
       if (inquiryRes.error) throw inquiryRes.error; if (fileRes.error) throw fileRes.error; if (commentRes.error) throw commentRes.error; if (activityRes.error) throw activityRes.error;
       state.activeInquiry = { ...inquiryRes.data, inquiry_files: fileRes.data || [], inquiry_comments: commentRes.data || [], activity_events: activityRes.data || [] };
       renderInquiryDetail();
-      const dialog = el('inquiryDetailDialog'); if (!dialog.open) dialog.showModal();
-      if (editHint) toast('Tap any pencil icon to edit that detail.');
+      if (!dialog.open) dialog.showModal();
     } catch (error) { toast(friendlyError(error), 'error'); }
   }
 
@@ -274,7 +276,7 @@
     revokeAttachmentPreviews();
     const assigned = state.profiles.find(p => p.id === i.assigned_to);
     el('inquiryDetailContent').innerHTML = `<div class="detail-wrap">
-      <div class="detail-hero"><div class="detail-hero-top"><span class="card-number">${formatInquiryNo(i.inquiry_no)} · Added ${formatDate(i.created_at)}</span><button class="icon-btn" data-dialog-close="inquiryDetailDialog" aria-label="Close"><i data-lucide="x"></i></button></div><div class="detail-title-row"><div><h2>${escapeHtml(i.person_name)}</h2><p>${escapeHtml(i.company_name || 'Individual customer')}</p></div><div class="tag-row"><span class="status-pill status-${i.status}">${statusLabels[i.status]}</span><span class="priority-pill priority-${i.priority}">${escapeHtml(i.priority)}</span></div></div></div>
+      <div class="detail-hero"><div class="detail-hero-top"><span class="card-number">${formatInquiryNo(i.inquiry_no)} · Added ${formatDate(i.created_at)}</span><div class="detail-hero-actions"><button class="btn ${state.inquiryEditMode?'soft':'primary'} small" data-action="toggle-inquiry-edit"><i data-lucide="${state.inquiryEditMode?'check':'pencil'}"></i>${state.inquiryEditMode?'Done':'Edit'}</button><button class="icon-btn" data-dialog-close="inquiryDetailDialog" aria-label="Close"><i data-lucide="x"></i></button></div></div><div class="detail-title-row"><div><h2>${escapeHtml(i.person_name)}</h2><p>${escapeHtml(i.company_name || 'Individual customer')}</p></div><div class="tag-row"><span class="status-pill status-${i.status}">${statusLabels[i.status]}</span><span class="priority-pill priority-${i.priority}">${escapeHtml(i.priority)}</span></div></div></div>
       <nav class="detail-tabs" aria-label="Inquiry details"><button class="detail-tab ${activeTab==='overview'?'active':''}" data-detail-tab="overview">Overview</button><button class="detail-tab ${activeTab==='timeline'?'active':''}" data-detail-tab="timeline">Timeline (${(i.activity_events||[]).length})</button><button class="detail-tab ${activeTab==='tasks'?'active':''}" data-detail-tab="tasks">Tasks (${tasksForInquiry(i.id).length})</button><button class="detail-tab ${activeTab==='products'?'active':''}" data-detail-tab="products">Products (${(i.inquiry_items||[]).length})</button><button class="detail-tab ${activeTab==='files'?'active':''}" data-detail-tab="files">Attachments (${(i.inquiry_files||[]).length})</button><button class="detail-tab ${activeTab==='comments'?'active':''}" data-detail-tab="comments">Comments (${(i.inquiry_comments||[]).length})</button></nav>
       <div class="detail-scroll">
         <section class="detail-panel ${activeTab==='overview'?'active':''}" data-panel="overview">${overviewMarkup(i,assigned)}</section>
@@ -309,7 +311,7 @@
   }
 
   function detailSection(icon,title,rows) {
-    return `<article class="detail-section"><div class="detail-section-head"><div><i data-lucide="${icon}"></i><h3>${title}</h3></div></div><div class="field-list">${rows.map(([field,display,raw]) => `<div class="field-row"><div><label>${fieldMeta[field].label}</label><p>${escapeHtml(display || 'Not added')}</p></div><button class="edit-field-btn" data-action="edit-field" data-field="${field}" data-value="${escapeAttr(raw ?? display ?? '')}" aria-label="Edit ${fieldMeta[field].label}"><i data-lucide="pencil"></i></button></div>`).join('')}</div></article>`;
+    return `<article class="detail-section"><div class="detail-section-head"><div><i data-lucide="${icon}"></i><h3>${title}</h3></div></div><div class="field-list">${rows.map(([field,display,raw]) => `<div class="field-row"><div><label>${fieldMeta[field].label}</label><p>${escapeHtml(display || 'Not added')}</p></div>${state.inquiryEditMode?`<button class="edit-field-btn" data-action="edit-field" data-field="${field}" data-value="${escapeAttr(raw ?? display ?? '')}" aria-label="Edit ${fieldMeta[field].label}"><i data-lucide="pencil"></i></button>`:''}</div>`).join('')}</div></article>`;
   }
 
   function productsMarkup(i) {
@@ -320,7 +322,7 @@
   function productRowMarkup(inquiry, product) {
     const photo = (inquiry.inquiry_files||[]).find(file => file.file_kind === 'product_photo' && file.product_id === product.id);
     const visual = photo ? `<button class="product-thumb" data-action="preview-file" data-id="${photo.id}" aria-label="View ${escapeAttr(product.product_name)} photo"><span class="thumbnail-loading" data-file-preview="${photo.id}" data-preview-kind="image"><i data-lucide="image"></i></span></button>` : `<span class="product-icon"><i data-lucide="package"></i></span>`;
-    return `<div class="product-row">${visual}<div><strong>${escapeHtml(product.product_name)}</strong><p>${formatQuantity(product.quantity)} ${escapeHtml(product.quantity_unit||'')} ${product.details?`· ${escapeHtml(product.details)}`:''}</p>${photo?'<button class="product-photo-link" data-action="preview-file" data-id="'+photo.id+'">Tap photo to view</button>':''}</div><div class="row-actions"><button class="row-action" data-action="edit-product" data-id="${product.id}" aria-label="Edit product"><i data-lucide="pencil"></i></button><button class="row-action" data-action="delete-product" data-id="${product.id}" aria-label="Delete product"><i data-lucide="trash-2"></i></button></div></div>`;
+    return `<div class="product-row">${visual}<div><strong>${escapeHtml(product.product_name)}</strong><p>${formatQuantity(product.quantity)} ${escapeHtml(product.quantity_unit||'')} ${product.details?`· ${escapeHtml(product.details)}`:''}</p>${photo?'<button class="product-photo-link" data-action="preview-file" data-id="'+photo.id+'">Tap photo to view</button>':''}</div>${state.inquiryEditMode?`<div class="row-actions"><button class="row-action" data-action="edit-product" data-id="${product.id}" aria-label="Edit product"><i data-lucide="pencil"></i></button><button class="row-action" data-action="delete-product" data-id="${product.id}" aria-label="Delete product"><i data-lucide="trash-2"></i></button></div>`:''}</div>`;
   }
 
   function tasksForInquiry(inquiryId) { return state.tasks.filter(task => task.inquiry_id === inquiryId); }
@@ -369,7 +371,7 @@
       const id = action.dataset.id, type = action.dataset.action;
       if (type === 'add-inquiry') return openInquiryForm();
       if (type === 'view') return openInquiryDetail(id);
-      if (type === 'edit') return openInquiryDetail(id, true);
+      if (type === 'toggle-inquiry-edit') { state.inquiryEditMode = !state.inquiryEditMode; return renderInquiryDetail($('.detail-tab.active')?.dataset.detailTab || 'overview'); }
       if (type === 'edit-field') return openFieldEdit(action.dataset.field, action.dataset.value);
       if (type === 'add-product') return openProductForm();
       if (type === 'edit-product') return openProductForm((state.activeInquiry.inquiry_items||[]).find(p=>p.id===id));
