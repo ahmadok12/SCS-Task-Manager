@@ -41,6 +41,7 @@ create table public.profiles (
 create table public.inquiries (
   id uuid primary key default gen_random_uuid(),
   inquiry_no bigint generated always as identity unique,
+  client_request_id uuid unique,
   status text not null default 'new' check (status in ('new','contacted','quoted','won','lost','on_hold')),
   person_name text not null,
   company_name text not null default '',
@@ -55,6 +56,11 @@ create table public.inquiries (
   source text not null default '',
   priority text not null default 'normal' check (priority in ('low','normal','high','urgent')),
   assigned_to uuid references public.profiles(id) on delete set null,
+  closed_at timestamptz,
+  closed_by uuid references public.profiles(id) on delete set null,
+  close_reason text not null default '',
+  archived_at timestamptz,
+  archived_by uuid references public.profiles(id) on delete set null,
   created_by uuid not null references public.profiles(id) on delete restrict default auth.uid(),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -111,6 +117,10 @@ create index inquiries_status_idx on public.inquiries(status);
 create index inquiries_updated_at_idx on public.inquiries(updated_at desc);
 create index inquiries_assigned_to_idx on public.inquiries(assigned_to);
 create index inquiries_created_by_idx on public.inquiries(created_by);
+create index inquiries_closed_by_idx on public.inquiries(closed_by);
+create index inquiries_archived_by_idx on public.inquiries(archived_by);
+create index inquiries_closed_at_idx on public.inquiries(closed_at, updated_at desc);
+create index inquiries_archived_at_idx on public.inquiries(archived_at, updated_at desc);
 create index inquiry_items_inquiry_id_idx on public.inquiry_items(inquiry_id);
 create index inquiry_files_inquiry_id_idx on public.inquiry_files(inquiry_id);
 create index inquiry_files_uploaded_by_idx on public.inquiry_files(uploaded_by);

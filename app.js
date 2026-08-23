@@ -10,6 +10,7 @@
     user: null, profile: null, profiles: [], inquiries: [], tasks: [], notifications: [],
     activeInquiry: null, authMode: 'signin', deferredInstall: null,
     realtimeChannel: null, fieldEdit: null, productEdit: null, taskEdit: null, currentView: 'inquiries', pushEnabled: false, inquiryEditMode: false,
+    inquirySaving: false, inquirySubmissionId: null,
     attachmentPreviewUrls: new Map(), attachmentPreviewRequest: 0, openPreviewFileId: null, localProductPhotoUrl: null, inquiryProductPhotoUrl: null, activeLocalPhotoUrl: null
   };
 
@@ -153,10 +154,11 @@
   }
 
   function renderStats() {
-    el('statAll').textContent = state.inquiries.length;
-    el('statNew').textContent = state.inquiries.filter(i => i.status === 'new').length;
-    el('statQuoted').textContent = state.inquiries.filter(i => i.status === 'quoted').length;
-    el('statWon').textContent = state.inquiries.filter(i => i.status === 'won').length;
+    const active = state.inquiries.filter(i => !i.archived_at && !i.closed_at);
+    el('statAll').textContent = active.length;
+    el('statNew').textContent = active.filter(i => i.status === 'new').length;
+    el('statQuoted').textContent = active.filter(i => i.status === 'quoted').length;
+    el('statWon').textContent = active.filter(i => i.status === 'won').length;
   }
 
   function renderTaskStats() {
@@ -198,7 +200,8 @@
     const sort = el('sortSelect').value;
     let rows = state.inquiries.filter(i => {
       const haystack = [i.person_name, i.company_name, i.mobile, i.email, ...(i.inquiry_items || []).map(p => `${p.product_name} ${p.details}`)].join(' ').toLowerCase();
-      return (!query || haystack.includes(query)) && (status === 'all' || i.status === status);
+      const lifecycleMatch = status === 'archived' ? !!i.archived_at : status === 'closed' ? !i.archived_at && !!i.closed_at : status === 'lost' ? !i.archived_at && i.status === 'lost' && !i.closed_at : status === 'all' ? !i.archived_at && !i.closed_at : !i.archived_at && !i.closed_at && i.status === status;
+      return (!query || haystack.includes(query)) && lifecycleMatch;
     });
     rows = [...rows].sort((a, b) => sort === 'name_asc' ? a.person_name.localeCompare(b.person_name) : new Date(sort === 'created_desc' ? b.created_at : b.updated_at) - new Date(sort === 'created_desc' ? a.created_at : a.updated_at));
     el('emptyState').classList.toggle('hidden', rows.length > 0);
@@ -210,34 +213,47 @@
     const product = [...(i.inquiry_items || [])].sort((a,b) => a.sort_order-b.sort_order)[0];
     const assigned = state.profiles.find(p => p.id === i.assigned_to);
     const company = i.company_name || 'Individual customer';
-    return `<article class="inquiry-card" data-id="${i.id}">
-      <div class="card-top"><span class="card-number">${formatInquiryNo(i.inquiry_no)}</span><span class="status-pill status-${i.status}">${statusLabels[i.status]}</span></div>
+    const displayStatus = i.archived_at ? 'Archived' : i.closed_at ? 'Closed' : statusLabels[i.status];
+    const statusClass = i.archived_at ? 'archived' : i.status;
+    const lifecycleActions = i.archived_at
+      ? `<button class="btn ghost small" data-action="restore-inquiry" data-id="${i.id}"><i data-lucide="archive-restore"></i>Restore</button>`
+      : `<button class="btn ghost small" data-action="${i.closed_at?'reopen-inquiry':'close-inquiry'}" data-id="${i.id}"><i data-lucide="${i.closed_at?'rotate-ccw':'circle-x'}"></i>${i.closed_at?'Reopen':'Close'}</button><button class="btn danger-soft small" data-action="archive-inquiry" data-id="${i.id}"><i data-lucide="archive"></i>Archive</button>`;
+    return `<article class="inquiry-card ${i.archived_at?'archived-card':''}" data-id="${i.id}">
+      <div class="card-top"><span class="card-number">${formatInquiryNo(i.inquiry_no)}</span><span class="status-pill status-${statusClass}">${displayStatus}</span></div>
       <div class="card-title"><div><h2>${escapeHtml(i.person_name)}</h2><p>${escapeHtml(company)}</p></div><span class="person-avatar">${initialsFor(i.person_name)}</span></div>
       <div class="product-preview"><strong>${escapeHtml(product?.product_name || 'Product not added')}</strong><span>${product ? `${formatQuantity(product.quantity)} ${escapeHtml(product.quantity_unit || '')} · ${(i.inquiry_items || []).length} product${i.inquiry_items.length === 1 ? '' : 's'}` : 'Open inquiry to add product details'}</span></div>
       <div class="card-meta">${i.mobile ? `<span><i data-lucide="phone"></i>${escapeHtml(i.mobile)}</span>` : ''}<span><i data-lucide="clock-3"></i>${relativeTime(i.updated_at)}</span></div>
       <div class="tag-row"><span class="priority-pill priority-${i.priority}">${escapeHtml(i.priority)} priority</span>${assigned ? `<span class="priority-pill priority-normal">${escapeHtml(assigned.full_name || assigned.email)}</span>` : ''}</div>
-      <div class="card-actions"><button class="btn soft wide" data-action="view" data-id="${i.id}"><i data-lucide="eye"></i>View</button></div>
+      <div class="card-actions"><button class="btn soft small" data-action="view" data-id="${i.id}"><i data-lucide="eye"></i>View</button>${lifecycleActions}</div>
     </article>`;
   }
 
   function openInquiryForm() {
     clearInquiryProductPhoto(); const form = el('inquiryForm'); form.reset();
+    state.inquirySubmissionId = crypto.randomUUID(); state.inquirySaving = false;
     form.querySelector('[name="quantity_unit"]').value = 'pcs'; form.querySelector('[name="quote_currency"]').value = 'USD';
+    el('saveInquiryBtn').disabled = false; $('.btn-label', el('saveInquiryBtn')).textContent = 'Save inquiry';
     el('inquiryFormDialog').showModal(); window.lucide?.createIcons();
   }
 
   async function saveNewInquiry(event) {
     event.preventDefault();
-    const form = event.currentTarget, button = el('saveInquiryBtn'); button.disabled = true;
+    if (state.inquirySaving) return;
+    state.inquirySaving = true;
+    const form = event.currentTarget, button = el('saveInquiryBtn'), buttonLabel = $('.btn-label', button); button.disabled = true; buttonLabel.textContent = 'Saving…';
     const fd = new FormData(form);
     const inquiryPayload = {
       person_name: clean(fd.get('person_name')), company_name: clean(fd.get('company_name')), mobile: clean(fd.get('mobile')), email: clean(fd.get('email')),
       customer_address: clean(fd.get('customer_address')), delivery_address: clean(fd.get('delivery_address')), status: fd.get('status'), priority: fd.get('priority'), source: clean(fd.get('source')),
       quote_amount: numberOrNull(fd.get('quote_amount')), quote_currency: fd.get('quote_currency'), quote_notes: clean(fd.get('quote_notes')), payment_notes: clean(fd.get('payment_notes')),
-      assigned_to: fd.get('assigned_to') || null, created_by: state.user.id
+      assigned_to: fd.get('assigned_to') || null, created_by: state.user.id, client_request_id: state.inquirySubmissionId || crypto.randomUUID()
     };
+    let inquiry = null;
     try {
-      const { data: inquiry, error } = await db.from('inquiries').insert(inquiryPayload).select().single(); if (error) throw error;
+      const { data, error } = await db.from('inquiries').upsert(inquiryPayload, { onConflict: 'client_request_id' }).select().single(); if (error) throw error;
+      inquiry = data;
+      if (el('inquiryFormDialog').open) el('inquiryFormDialog').close();
+      toast(`${formatInquiryNo(inquiry.inquiry_no)} saved`);
       const productName = clean(fd.get('product_name'));
       if (productName) {
         const { data: item, error: itemError } = await db.from('inquiry_items').insert({ inquiry_id: inquiry.id, product_name: productName, quantity: numberOrNull(fd.get('quantity')), quantity_unit: clean(fd.get('quantity_unit')) || 'pcs', details: clean(fd.get('product_details')) }).select().single();
@@ -249,9 +265,12 @@
         }
       }
       await dispatchPush('new_inquiry', inquiry.id);
-      el('inquiryFormDialog').close(); toast(`${formatInquiryNo(inquiry.inquiry_no)} created with automatic tasks`); await Promise.all([loadInquiries(), loadTasks()]);
-    } catch (error) { toast(friendlyError(error), 'error'); }
-    finally { button.disabled = false; }
+      await Promise.all([loadInquiries(), loadTasks()]);
+    } catch (error) {
+      toast(inquiry ? `Inquiry saved, but setup was incomplete: ${friendlyError(error)}` : friendlyError(error), 'error');
+      if (inquiry) await Promise.all([loadInquiries(), loadTasks()]);
+    }
+    finally { state.inquirySaving = false; button.disabled = false; buttonLabel.textContent = 'Save inquiry'; }
   }
 
   async function openInquiryDetail(id) {
@@ -276,7 +295,7 @@
     revokeAttachmentPreviews();
     const assigned = state.profiles.find(p => p.id === i.assigned_to);
     el('inquiryDetailContent').innerHTML = `<div class="detail-wrap">
-      <div class="detail-hero"><div class="detail-hero-top"><span class="card-number">${formatInquiryNo(i.inquiry_no)} · Added ${formatDate(i.created_at)}</span><div class="detail-hero-actions"><button class="btn ${state.inquiryEditMode?'soft':'primary'} small" data-action="toggle-inquiry-edit"><i data-lucide="${state.inquiryEditMode?'check':'pencil'}"></i>${state.inquiryEditMode?'Done':'Edit'}</button><button class="icon-btn" data-dialog-close="inquiryDetailDialog" aria-label="Close"><i data-lucide="x"></i></button></div></div><div class="detail-title-row"><div><h2>${escapeHtml(i.person_name)}</h2><p>${escapeHtml(i.company_name || 'Individual customer')}</p></div><div class="tag-row"><span class="status-pill status-${i.status}">${statusLabels[i.status]}</span><span class="priority-pill priority-${i.priority}">${escapeHtml(i.priority)}</span></div></div></div>
+      <div class="detail-hero"><div class="detail-hero-top"><span class="card-number">${formatInquiryNo(i.inquiry_no)} · Added ${formatDate(i.created_at)}</span><div class="detail-hero-actions"><button class="btn ${state.inquiryEditMode?'soft':'primary'} small" data-action="toggle-inquiry-edit"><i data-lucide="${state.inquiryEditMode?'check':'pencil'}"></i>${state.inquiryEditMode?'Done':'Edit'}</button>${i.archived_at?`<button class="btn ghost small" data-action="restore-inquiry" data-id="${i.id}"><i data-lucide="archive-restore"></i>Restore</button>`:`<button class="btn ghost small" data-action="${i.closed_at?'reopen-inquiry':'close-inquiry'}" data-id="${i.id}"><i data-lucide="${i.closed_at?'rotate-ccw':'circle-x'}"></i>${i.closed_at?'Reopen':'Close inquiry'}</button><button class="btn danger-soft small" data-action="archive-inquiry" data-id="${i.id}"><i data-lucide="archive"></i>Archive</button>`}<button class="icon-btn" data-dialog-close="inquiryDetailDialog" aria-label="Close dialog"><i data-lucide="x"></i></button></div></div><div class="detail-title-row"><div><h2>${escapeHtml(i.person_name)}</h2><p>${escapeHtml(i.company_name || 'Individual customer')}</p></div><div class="tag-row"><span class="status-pill status-${i.archived_at?'archived':i.status}">${i.archived_at?'Archived':i.closed_at?'Closed':statusLabels[i.status]}</span><span class="priority-pill priority-${i.priority}">${escapeHtml(i.priority)}</span></div></div></div>
       <nav class="detail-tabs" aria-label="Inquiry details"><button class="detail-tab ${activeTab==='overview'?'active':''}" data-detail-tab="overview">Overview</button><button class="detail-tab ${activeTab==='timeline'?'active':''}" data-detail-tab="timeline">Timeline (${(i.activity_events||[]).length})</button><button class="detail-tab ${activeTab==='tasks'?'active':''}" data-detail-tab="tasks">Tasks (${tasksForInquiry(i.id).length})</button><button class="detail-tab ${activeTab==='products'?'active':''}" data-detail-tab="products">Products (${(i.inquiry_items||[]).length})</button><button class="detail-tab ${activeTab==='files'?'active':''}" data-detail-tab="files">Attachments (${(i.inquiry_files||[]).length})</button><button class="detail-tab ${activeTab==='comments'?'active':''}" data-detail-tab="comments">Comments (${(i.inquiry_comments||[]).length})</button></nav>
       <div class="detail-scroll">
         <section class="detail-panel ${activeTab==='overview'?'active':''}" data-panel="overview">${overviewMarkup(i,assigned)}</section>
@@ -371,6 +390,10 @@
       const id = action.dataset.id, type = action.dataset.action;
       if (type === 'add-inquiry') return openInquiryForm();
       if (type === 'view') return openInquiryDetail(id);
+      if (type === 'close-inquiry') return closeInquiry(id);
+      if (type === 'reopen-inquiry') return reopenInquiry(id);
+      if (type === 'archive-inquiry') return archiveInquiry(id);
+      if (type === 'restore-inquiry') return restoreInquiry(id);
       if (type === 'toggle-inquiry-edit') { state.inquiryEditMode = !state.inquiryEditMode; return renderInquiryDetail($('.detail-tab.active')?.dataset.detailTab || 'overview'); }
       if (type === 'edit-field') return openFieldEdit(action.dataset.field, action.dataset.value);
       if (type === 'add-product') return openProductForm();
@@ -396,6 +419,33 @@
     $$('[data-workspace-view]').forEach(button => button.classList.toggle('active', button.dataset.workspaceView === view));
     el('mobileAddBtn').setAttribute('aria-label', view === 'tasks' ? 'Add task' : 'Add inquiry');
     if (view === 'tasks') renderTasks();
+  }
+
+  async function closeInquiry(id) {
+    if (!confirm('Close this inquiry because the buyer is no longer interested?')) return;
+    await updateInquiryLifecycle(id, { status: 'lost', closed_at: new Date().toISOString(), closed_by: state.user.id, close_reason: 'Buyer no longer interested' }, 'Inquiry closed');
+  }
+
+  async function reopenInquiry(id) {
+    await updateInquiryLifecycle(id, { status: 'new', closed_at: null, closed_by: null, close_reason: '' }, 'Inquiry reopened');
+  }
+
+  async function archiveInquiry(id) {
+    if (!confirm('Archive this inquiry? It will move to the Archived filter.')) return;
+    await updateInquiryLifecycle(id, { archived_at: new Date().toISOString(), archived_by: state.user.id }, 'Inquiry archived', true);
+  }
+
+  async function restoreInquiry(id) {
+    await updateInquiryLifecycle(id, { archived_at: null, archived_by: null }, 'Inquiry restored');
+  }
+
+  async function updateInquiryLifecycle(id, changes, successMessage, closeDetail = false) {
+    try {
+      const { error } = await db.from('inquiries').update(changes).eq('id', id); if (error) throw error;
+      if (closeDetail && el('inquiryDetailDialog').open) el('inquiryDetailDialog').close();
+      toast(successMessage); await loadInquiries();
+      if (!closeDetail && state.activeInquiry?.id === id && el('inquiryDetailDialog').open) await openInquiryDetail(id);
+    } catch (error) { toast(friendlyError(error), 'error'); }
   }
 
   document.addEventListener('change', event => {
