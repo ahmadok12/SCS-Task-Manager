@@ -1,4 +1,4 @@
-const CACHE = 'scs-inquiry-v7';
+const CACHE = 'scs-inquiry-v8';
 const APP_SHELL = ['./', './index.html', './styles.css', './app.js', './config.js', './manifest.webmanifest', './assets/icon.svg', './assets/icon-192.png', './assets/icon-512.png'];
 
 self.addEventListener('install', event => {
