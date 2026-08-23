@@ -10,7 +10,7 @@
     user: null, profile: null, profiles: [], inquiries: [], tasks: [], notifications: [],
     activeInquiry: null, authMode: 'signin', deferredInstall: null,
     realtimeChannel: null, fieldEdit: null, productEdit: null, taskEdit: null, currentView: 'inquiries',
-    attachmentPreviewUrls: new Map(), attachmentPreviewRequest: 0, openPreviewFileId: null
+    attachmentPreviewUrls: new Map(), attachmentPreviewRequest: 0, openPreviewFileId: null, localProductPhotoUrl: null, inquiryProductPhotoUrl: null, activeLocalPhotoUrl: null
   };
 
   const $ = (s, root = document) => root.querySelector(s);
@@ -67,6 +67,8 @@
     el('installBtn').addEventListener('click', installPwa);
     el('inquiryDetailDialog').addEventListener('close', revokeAttachmentPreviews);
     el('attachmentPreviewDialog').addEventListener('close', closeAttachmentPreview);
+    el('productDialog').addEventListener('close', clearLocalProductPhoto);
+    el('inquiryFormDialog').addEventListener('close', clearInquiryProductPhoto);
     window.addEventListener('online', () => toast('Back online'));
     window.addEventListener('offline', () => toast('You are offline. Saved pages remain available.', 'error'));
   }
@@ -215,7 +217,7 @@
   }
 
   function openInquiryForm() {
-    const form = el('inquiryForm'); form.reset();
+    clearInquiryProductPhoto(); const form = el('inquiryForm'); form.reset();
     form.querySelector('[name="quantity_unit"]').value = 'pcs'; form.querySelector('[name="quote_currency"]').value = 'USD';
     el('inquiryFormDialog').showModal(); window.lucide?.createIcons();
   }
@@ -234,8 +236,13 @@
       const { data: inquiry, error } = await db.from('inquiries').insert(inquiryPayload).select().single(); if (error) throw error;
       const productName = clean(fd.get('product_name'));
       if (productName) {
-        const { error: itemError } = await db.from('inquiry_items').insert({ inquiry_id: inquiry.id, product_name: productName, quantity: numberOrNull(fd.get('quantity')), quantity_unit: clean(fd.get('quantity_unit')) || 'pcs', details: clean(fd.get('product_details')) });
+        const { data: item, error: itemError } = await db.from('inquiry_items').insert({ inquiry_id: inquiry.id, product_name: productName, quantity: numberOrNull(fd.get('quantity')), quantity_unit: clean(fd.get('quantity_unit')) || 'pcs', details: clean(fd.get('product_details')) }).select().single();
         if (itemError) throw itemError;
+        const photo = fd.get('product_photo');
+        if (photo instanceof File && photo.size) {
+          try { await uploadProductPhoto(photo, item.id, inquiry.id); }
+          catch (photoError) { toast(`Inquiry saved, but photo failed: ${friendlyError(photoError)}`, 'error'); }
+        }
       }
       el('inquiryFormDialog').close(); toast(`${formatInquiryNo(inquiry.inquiry_no)} created with automatic tasks`); await Promise.all([loadInquiries(), loadTasks()]);
     } catch (error) { toast(friendlyError(error), 'error'); }
@@ -272,7 +279,7 @@
         <section class="detail-panel ${activeTab==='comments'?'active':''}" data-panel="comments">${commentsMarkup(i)}</section>
       </div></div>`;
     window.lucide?.createIcons();
-    if (activeTab === 'files') hydrateAttachmentPreviews(i.id);
+    if (activeTab === 'files' || activeTab === 'products') hydrateAttachmentPreviews(i.id);
   }
 
   function overviewMarkup(i, assigned) {
@@ -290,7 +297,13 @@
 
   function productsMarkup(i) {
     const products = [...(i.inquiry_items||[])].sort((a,b)=>a.sort_order-b.sort_order);
-    return `<article class="detail-section full"><div class="detail-section-head"><div><i data-lucide="package-open"></i><h3>Products requested</h3></div><button class="btn soft small" data-action="add-product"><i data-lucide="plus"></i>Add product</button></div><div class="products-list">${products.length ? products.map(p => `<div class="product-row"><span class="product-icon"><i data-lucide="package"></i></span><div><strong>${escapeHtml(p.product_name)}</strong><p>${formatQuantity(p.quantity)} ${escapeHtml(p.quantity_unit||'')} ${p.details?`· ${escapeHtml(p.details)}`:''}</p></div><div class="row-actions"><button class="row-action" data-action="edit-product" data-id="${p.id}" aria-label="Edit product"><i data-lucide="pencil"></i></button><button class="row-action" data-action="delete-product" data-id="${p.id}" aria-label="Delete product"><i data-lucide="trash-2"></i></button></div></div>`).join('') : '<div class="empty-inline">No products added yet.</div>'}</div></article>`;
+    return `<article class="detail-section full"><div class="detail-section-head"><div><i data-lucide="package-open"></i><h3>Products requested</h3></div><button class="btn soft small" data-action="add-product"><i data-lucide="plus"></i>Add product</button></div><div class="products-list">${products.length ? products.map(p => productRowMarkup(i,p)).join('') : '<div class="empty-inline">No products added yet.</div>'}</div></article>`;
+  }
+
+  function productRowMarkup(inquiry, product) {
+    const photo = (inquiry.inquiry_files||[]).find(file => file.file_kind === 'product_photo' && file.product_id === product.id);
+    const visual = photo ? `<button class="product-thumb" data-action="preview-file" data-id="${photo.id}" aria-label="View ${escapeAttr(product.product_name)} photo"><span class="thumbnail-loading" data-file-preview="${photo.id}" data-preview-kind="image"><i data-lucide="image"></i></span></button>` : `<span class="product-icon"><i data-lucide="package"></i></span>`;
+    return `<div class="product-row">${visual}<div><strong>${escapeHtml(product.product_name)}</strong><p>${formatQuantity(product.quantity)} ${escapeHtml(product.quantity_unit||'')} ${product.details?`· ${escapeHtml(product.details)}`:''}</p>${photo?'<button class="product-photo-link" data-action="preview-file" data-id="'+photo.id+'">Tap photo to view</button>':''}</div><div class="row-actions"><button class="row-action" data-action="edit-product" data-id="${product.id}" aria-label="Edit product"><i data-lucide="pencil"></i></button><button class="row-action" data-action="delete-product" data-id="${product.id}" aria-label="Delete product"><i data-lucide="trash-2"></i></button></div></div>`;
   }
 
   function tasksForInquiry(inquiryId) { return state.tasks.filter(task => task.inquiry_id === inquiryId); }
@@ -351,6 +364,7 @@
       if (type === 'toggle-task') return toggleTask(id);
       if (type === 'view-task-inquiry') { el('taskDialog').open && el('taskDialog').close(); return openInquiryDetail(id); }
       if (type === 'preview-file') return openAttachmentPreview(id);
+      if (type === 'preview-local-product-photo') return openLocalProductPhotoPreview(action.dataset.localSource);
       if (type === 'download-file') return downloadFile(id);
       if (type === 'delete-file') return deleteFile(id);
     }
@@ -366,6 +380,8 @@
   }
 
   document.addEventListener('change', event => {
+    if (event.target.id === 'productPhotoInput') return showLocalProductPhoto(event.target.files?.[0]);
+    if (event.target.id === 'inquiryProductPhotoInput') return showInquiryProductPhoto(event.target.files?.[0]);
     const input = event.target.closest('[data-upload-kind]');
     if (input?.files?.length) uploadFiles(input.files, input.dataset.uploadKind, input);
   });
@@ -393,26 +409,79 @@
   }
 
   function openProductForm(product = null) {
-    state.productEdit = product || null; const form = el('productForm'); form.reset(); form.quantity_unit.value = 'pcs';
+    clearLocalProductPhoto(); state.productEdit = product || null; const form = el('productForm'); form.reset(); form.quantity_unit.value = 'pcs';
     el('productFormTitle').textContent = product ? 'Edit product' : 'Add product';
     if (product) { form.product_name.value=product.product_name; form.quantity.value=product.quantity??''; form.quantity_unit.value=product.quantity_unit||'pcs'; form.details.value=product.details||''; }
+    const existingPhoto = product && (state.activeInquiry.inquiry_files||[]).find(file => file.file_kind === 'product_photo' && file.product_id === product.id);
+    if (existingPhoto) { el('productPhotoPreview').classList.remove('hidden'); el('productPhotoPreview').innerHTML = `<button type="button" data-action="preview-file" data-id="${existingPhoto.id}"><i data-lucide="image"></i><span>Current photo</span><small>Tap to view · choose another to replace</small></button>`; }
     el('productDialog').showModal();
+    window.lucide?.createIcons();
   }
 
   async function saveProduct(event) {
     event.preventDefault(); const fd = new FormData(event.currentTarget), payload = { product_name: clean(fd.get('product_name')), quantity: numberOrNull(fd.get('quantity')), quantity_unit: clean(fd.get('quantity_unit'))||'pcs', details: clean(fd.get('details')) };
     try {
       let result;
-      if (state.productEdit) result = await db.from('inquiry_items').update(payload).eq('id', state.productEdit.id);
-      else result = await db.from('inquiry_items').insert({ ...payload, inquiry_id: state.activeInquiry.id, sort_order: state.activeInquiry.inquiry_items?.length || 0 });
-      if (result.error) throw result.error; el('productDialog').close(); toast('Product saved'); await refreshActiveInquiry('products');
+      if (state.productEdit) result = await db.from('inquiry_items').update(payload).eq('id', state.productEdit.id).select().single();
+      else result = await db.from('inquiry_items').insert({ ...payload, inquiry_id: state.activeInquiry.id, sort_order: state.activeInquiry.inquiry_items?.length || 0 }).select().single();
+      if (result.error) throw result.error;
+      const photo = fd.get('product_photo');
+      let photoSaved = false;
+      if (photo instanceof File && photo.size) {
+        try { await uploadProductPhoto(photo, result.data.id); photoSaved = true; }
+        catch (photoError) { toast(`Product saved, but photo failed: ${friendlyError(photoError)}`, 'error'); }
+      }
+      el('productDialog').close(); if (!(photo instanceof File && photo.size) || photoSaved) toast(photoSaved ? 'Product and photo saved' : 'Product saved'); await refreshActiveInquiry('products');
     } catch (error) { toast(friendlyError(error), 'error'); }
   }
 
   async function deleteProduct(id) {
     if (!confirm('Delete this product from the inquiry?')) return;
+    const photo = (state.activeInquiry.inquiry_files||[]).find(file => file.file_kind === 'product_photo' && file.product_id === id);
+    if (photo) { const removed = await deleteFileRequest(photo.id); if (!removed) return; }
     const { error } = await db.from('inquiry_items').delete().eq('id', id); if (error) return toast(friendlyError(error),'error');
     toast('Product deleted'); await refreshActiveInquiry('products');
+  }
+
+  async function uploadProductPhoto(file, productId, inquiryId = state.activeInquiry?.id) {
+    if (!cfg.attachmentApiUrl) throw new Error('Attachment service is not configured.');
+    if (!inquiryId) throw new Error('Inquiry could not be identified.');
+    const { data: { session } } = await db.auth.getSession(); if (!session) throw new Error('Sign in is required');
+    const body = new FormData(); body.append('file',file); body.append('file_kind','product_photo'); body.append('product_id',productId);
+    const response = await fetch(`${cfg.attachmentApiUrl}/inquiries/${inquiryId}/files`, { method:'POST', headers:{ Authorization:`Bearer ${session.access_token}` }, body });
+    if (!response.ok) throw new Error((await response.json().catch(()=>({}))).error || `Photo upload failed (${response.status})`);
+  }
+
+  function showLocalProductPhoto(file) {
+    clearLocalProductPhoto(); if (!file) return;
+    if (!file.type.startsWith('image/')) return toast('Choose an image file.', 'error');
+    state.localProductPhotoUrl = URL.createObjectURL(file); el('productPhotoPreview').classList.remove('hidden');
+    el('productPhotoPreview').innerHTML = `<button type="button" data-action="preview-local-product-photo" data-local-source="product"><img src="${escapeAttr(state.localProductPhotoUrl)}" alt="Selected product photo"><span>${escapeHtml(file.name)}</span><small>Tap to view larger</small></button>`;
+  }
+
+  function showInquiryProductPhoto(file) {
+    clearInquiryProductPhoto(); if (!file) return;
+    if (!file.type.startsWith('image/')) return toast('Choose an image file.', 'error');
+    state.inquiryProductPhotoUrl = URL.createObjectURL(file); el('inquiryProductPhotoPreview').classList.remove('hidden');
+    el('inquiryProductPhotoPreview').innerHTML = `<button type="button" data-action="preview-local-product-photo" data-local-source="inquiry"><img src="${escapeAttr(state.inquiryProductPhotoUrl)}" alt="Selected product photo"><span>${escapeHtml(file.name)}</span><small>Tap to view larger</small></button>`;
+  }
+
+  function clearLocalProductPhoto() {
+    if (state.localProductPhotoUrl) URL.revokeObjectURL(state.localProductPhotoUrl); state.localProductPhotoUrl = null;
+    const preview = el('productPhotoPreview'); if (preview) { preview.replaceChildren(); preview.classList.add('hidden'); }
+  }
+
+  function clearInquiryProductPhoto() {
+    if (state.inquiryProductPhotoUrl) URL.revokeObjectURL(state.inquiryProductPhotoUrl); state.inquiryProductPhotoUrl = null;
+    const preview = el('inquiryProductPhotoPreview'); if (preview) { preview.replaceChildren(); preview.classList.add('hidden'); }
+  }
+
+  function openLocalProductPhotoPreview(source = 'product') {
+    const url = source === 'inquiry' ? state.inquiryProductPhotoUrl : state.localProductPhotoUrl; if (!url) return;
+    state.activeLocalPhotoUrl = url;
+    const dialog = el('attachmentPreviewDialog'), body = el('attachmentPreviewBody'); state.openPreviewFileId = null;
+    el('attachmentPreviewTitle').textContent = 'Selected product photo'; body.innerHTML = `<img src="${escapeAttr(url)}" alt="Selected product photo">`;
+    el('previewDownloadBtn').classList.add('hidden'); if (!dialog.open) dialog.showModal();
   }
 
   function openTaskForm(task = null, inquiryId = null) {
@@ -515,7 +584,7 @@
   async function openAttachmentPreview(id) {
     const file = (state.activeInquiry?.inquiry_files || []).find(item => item.id === id); if (!file) return;
     const dialog = el('attachmentPreviewDialog'), body = el('attachmentPreviewBody');
-    state.openPreviewFileId = id; el('attachmentPreviewTitle').textContent = file.file_name;
+    state.openPreviewFileId = id; el('attachmentPreviewTitle').textContent = file.file_name; el('previewDownloadBtn').classList.remove('hidden');
     body.innerHTML = '<div class="preview-loading"><span class="spinner"></span><strong>Loading preview…</strong></div>';
     if (!dialog.open) dialog.showModal();
     try {
@@ -557,12 +626,17 @@
 
   async function deleteFile(id) {
     if (!confirm('Delete this attachment permanently?')) return;
+    if (!await deleteFileRequest(id)) return;
+    toast('Attachment deleted'); await refreshActiveInquiry('files');
+  }
+
+  async function deleteFileRequest(id) {
     try {
       const { data: { session } } = await db.auth.getSession();
       const response = await fetch(`${cfg.attachmentApiUrl}/inquiries/${state.activeInquiry.id}/files/${id}`, { method:'DELETE', headers:{ Authorization:`Bearer ${session.access_token}` } });
       if (!response.ok) throw new Error((await response.json().catch(()=>({}))).error || 'Delete failed');
-      toast('Attachment deleted'); await refreshActiveInquiry('files');
-    } catch(error){ toast(friendlyError(error),'error'); }
+      return true;
+    } catch(error){ toast(friendlyError(error),'error'); return false; }
   }
 
   async function addComment(form) {
